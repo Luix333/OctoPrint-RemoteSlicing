@@ -1,0 +1,14 @@
+<h3>Remote Slicing</h3>
+<p>Models are sliced on your PC by CuraEngine, with the Cura settings you last used. Two things run on the PC:</p>
+<ol>
+    <li><strong>The Cura plugin "Remote Slicing Snapshot".</strong> Drag <code>RemoteSlicingSnapshot-&lt;version&gt;.curapackage</code>
+        onto Cura's window and restart Cura. It saves your active printer, profile and materials every time they
+        change, so jobs use the settings Cura was last closed with. Cura does not need to be open while slicing.</li>
+    <li><strong>The PC agent.</strong> From the <code>agent</code> folder, run
+        <code>python -m remote_slicing_agent setup --url http://&lt;this OctoPrint&gt;</code> and approve the
+        "Remote Slicing Agent" request that pops up here in OctoPrint. Then start it with
+        <code>pythonw -m remote_slicing_agent run</code>, or make it start with Windows:
+        <code>python -m remote_slicing_agent install-startup</code>.</li>
+</ol>
+<p class="muted">SolidWorks parts are converted through the Cura SolidWorks plugin on the PC. "From PC Dropbox" lists the folder
+    that the Dropbox app syncs on that PC.</p>

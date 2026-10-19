@@ -1,0 +1,86 @@
+/* Remote Slicing tab. Colours come from the host theme (UI Customizer variables) with stock fallbacks. */
+.remoteslicing {
+    --rs-accent: var(--accent, #2d6a9f);
+    --rs-text: var(--quiteWhite, #333333);
+    --rs-muted: var(--grey3, #888888);
+    --rs-line: var(--grey2, rgba(128, 128, 128, 0.25));
+    --rs-bed: var(--grey1, #2b2f33);
+    --rs-grid: var(--grey2, #3d4349);
+    --rs-bed-text: #c8ccd0;  /* labels drawn on the dark bed */
+    --rs-bad: var(--red, #d9534f);
+    --rs-warn: #d4a72c;
+    --rs-ok: var(--green, #2da44e);
+    --rs-select: var(--accent, #58a6ff);
+    color: var(--rs-text);
+}
+
+.remoteslicing .muted { color: var(--rs-muted); }
+.remoteslicing .rs-bad { color: var(--rs-bad); }
+.remoteslicing .rs-warn { color: var(--rs-warn); }
+.remoteslicing .rs-ok { color: var(--rs-ok); }
+
+/* status line */
+.remoteslicing .rs-status {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+    padding: 6px 10px; margin-bottom: 10px;
+    border: 1px solid var(--rs-line); border-radius: 4px; font-size: 13px;
+}
+.remoteslicing .rs-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--rs-bad); flex: none; }
+.remoteslicing .rs-online .rs-dot { background: var(--rs-ok); }
+.remoteslicing .rs-status-settings { flex: 1 1 260px; text-align: right; color: var(--rs-muted); }
+
+/* layout: two columns, stacked when the tab is narrow (class set from a ResizeObserver) */
+.remoteslicing .rs-columns { display: flex; gap: 16px; align-items: flex-start; }
+.remoteslicing .rs-main { flex: 1 1 58%; min-width: 0; }
+.remoteslicing .rs-side { flex: 1 1 42%; min-width: 0; }
+.remoteslicing.rs-narrow .rs-columns { flex-direction: column; }
+.remoteslicing.rs-narrow .rs-main,
+.remoteslicing.rs-narrow .rs-side { flex-basis: auto; width: 100%; }
+
+.remoteslicing .rs-plate-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.remoteslicing .rs-plate-head label { margin: 0; font-weight: bold; }
+.remoteslicing .rs-plate-head input { margin: 0; }
+
+/* bed */
+.remoteslicing .rs-bed-wrap { position: relative; width: 100%; }
+.remoteslicing #remoteslicing_bed { display: block; max-width: 100%; touch-action: none; cursor: grab; }
+.remoteslicing .rs-bed-hint { position: absolute; left: 0; right: 0; top: 45%; text-align: center; pointer-events: none; }
+.remoteslicing .rs-problems { min-height: 18px; margin: 4px 0; font-size: 12px; }
+.remoteslicing .rs-problems span { margin-right: 10px; }
+
+/* tables: OctoPrint forces table-layout: fixed in tabs */
+.remoteslicing .rs-table-wrap { overflow-x: auto; }
+.remoteslicing table.rs-table { table-layout: auto; width: 100%; margin-bottom: 6px; }
+.remoteslicing table.rs-table td { vertical-align: middle; }
+.remoteslicing .rs-name { word-break: break-word; }
+.remoteslicing .rs-actions { white-space: nowrap; text-align: right; }
+.remoteslicing .rs-plate-table tr { cursor: pointer; }
+.remoteslicing .rs-plate-table tr.rs-selected td { background: rgba(88, 166, 255, 0.12); }
+.remoteslicing .rs-num { width: 56px; margin: 0; padding: 2px 4px; }
+.remoteslicing .rs-extruder { width: auto; max-width: 150px; margin: 0; }
+.remoteslicing .rs-swatch {
+    display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: middle;
+    border-radius: 2px; outline: 1px solid var(--rs-muted);  /* black filament stays visible on dark themes */
+}
+.remoteslicing .rs-meta { font-size: 11px; }
+.remoteslicing .rs-src { margin-left: 4px; font-size: 10px; }
+
+.remoteslicing .rs-slice-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 12px; }
+
+/* side panels */
+.remoteslicing .rs-section { margin-bottom: 14px; }
+.remoteslicing .rs-section h4 { margin: 0 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--rs-line); }
+.remoteslicing .rs-upload { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.remoteslicing .rs-upload input[type=file] { max-width: 220px; font-size: 12px; }
+.remoteslicing .rs-progress { height: 8px; margin: 4px 0; }
+
+.remoteslicing .rs-browser { border: 1px solid var(--rs-line); border-radius: 4px; padding: 6px 8px; margin-bottom: 8px; }
+.remoteslicing .rs-crumbs { margin-bottom: 4px; font-size: 12px; word-break: break-all; }
+.remoteslicing .rs-entries { list-style: none; margin: 0; max-height: 260px; overflow-y: auto; }
+.remoteslicing .rs-entry { padding: 2px 0; }
+.remoteslicing .rs-entry i { width: 16px; text-align: center; color: var(--rs-muted); }
+
+.remoteslicing .rs-task { padding: 5px 0; border-bottom: 1px solid var(--rs-line); }
+.remoteslicing .rs-task:last-child { border-bottom: 0; }
+.remoteslicing .rs-task-head { display: flex; align-items: center; gap: 6px; }
+.remoteslicing .rs-task-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

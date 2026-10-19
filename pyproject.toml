@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "OctoPrint-RemoteSlicing"
+version = "0.1.0"
+description = "Place models on a 2D bed and slice them on your PC's CuraEngine with your last Cura settings"
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Luix333" }]
+keywords = ["octoprint"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Luix333/OctoPrint-RemoteSlicing"
+
+[project.entry-points."octoprint.plugin"]
+remoteslicing = "octoprint_remoteslicing"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["octoprint_remoteslicing*"]
+
+[tool.setuptools.package-data]
+octoprint_remoteslicing = ["templates/*.jinja2", "static/js/*.js", "static/css/*.css"]

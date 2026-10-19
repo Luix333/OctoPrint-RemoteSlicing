@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+recursive-include octoprint_remoteslicing/templates *
+recursive-include octoprint_remoteslicing/static *
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]

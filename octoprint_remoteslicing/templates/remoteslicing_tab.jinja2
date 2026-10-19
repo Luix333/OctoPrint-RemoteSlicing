@@ -1,0 +1,134 @@
+<div id="remoteslicing_tab" class="remoteslicing">
+    <div class="rs-status" data-bind="css: {'rs-online': agentOnline, 'rs-offline': !agentOnline()}">
+        <span class="rs-dot"></span>
+        <strong data-bind="text: agentOnline() ? 'PC agent online' : 'PC agent offline'"></strong>
+        <span class="muted" data-bind="visible: !agentOnline(), text: '· last seen ' + lastSeenText()"></span>
+        <span class="rs-status-settings" data-bind="text: settingsText"></span>
+    </div>
+
+    <div class="rs-columns">
+        <div class="rs-main">
+            <div class="rs-plate-head">
+                <label for="remoteslicing_plate_name">Plate</label>
+                <input type="text" id="remoteslicing_plate_name" class="input-medium" data-bind="value: plateName, valueUpdate: 'input'">
+                <span class="muted" data-bind="text: bedText"></span>
+            </div>
+            <div class="rs-bed-wrap">
+                <canvas id="remoteslicing_bed"></canvas>
+                <div class="rs-bed-hint muted" data-bind="visible: !items().length">Add models from the library to place them on the bed.</div>
+            </div>
+            <div class="rs-problems">
+                <span class="rs-bad" data-bind="visible: outsideNames().length, text: 'Outside the bed: ' + outsideNames().join(', ')"></span>
+                <span class="rs-warn" data-bind="visible: overlapText(), text: overlapText"></span>
+            </div>
+
+            <div class="rs-table-wrap" data-bind="visible: items().length">
+                <table class="table table-condensed rs-table rs-plate-table">
+                    <thead><tr><th>Model</th><th>Extruder</th><th>X</th><th>Y</th><th>Rot.</th><th></th></tr></thead>
+                    <tbody data-bind="foreach: items">
+                        <tr data-bind="css: {'rs-selected': $parent.selectedUid() === uid}, click: function () { $parent.selectItem(uid); return true; }">
+                            <td class="rs-name">
+                                <span data-bind="text: name"></span>
+                                <span class="muted" data-bind="visible: loading">loading…</span>
+                                <span class="rs-bad" data-bind="visible: error, text: error"></span>
+                            </td>
+                            <td>
+                                <span class="rs-swatch" data-bind="style: {background: $parent.extruderColor(extruder())}"></span>
+                                <select class="input-small rs-extruder" data-bind="options: $parent.extruderOptions, optionsText: 'label', optionsValue: 'nr', value: extruder, valueAllowUnset: true, optionsAfterRender: $parent.disableExtruder"></select>
+                            </td>
+                            <td><input type="number" step="1" class="rs-num" data-bind="value: x"></td>
+                            <td><input type="number" step="1" class="rs-num" data-bind="value: y"></td>
+                            <td><input type="number" step="5" class="rs-num" data-bind="value: rotation"></td>
+                            <td class="rs-actions">
+                                <button class="btn btn-mini" title="Duplicate" data-bind="click: $parent.duplicateItem"><i class="fas fa-clone"></i></button>
+                                <button class="btn btn-mini" title="Remove from plate" data-bind="click: $parent.removeItem"><i class="fas fa-times"></i></button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="rs-slice-buttons">
+                <button class="btn btn-primary" data-bind="enable: canSlice, click: function () { slice(false); }"><i class="fas fa-layer-group"></i> Slice &amp; upload</button>
+                <button class="btn btn-success" data-bind="enable: canSliceAndPrint, click: function () { slice(true); }"><i class="fas fa-print"></i> Slice, upload &amp; print</button>
+                <span class="muted" data-bind="text: sliceBlocker"></span>
+            </div>
+        </div>
+
+        <div class="rs-side">
+            <div class="rs-section">
+                <h4>Models</h4>
+                <div class="rs-upload">
+                    <input type="file" id="remoteslicing_file" accept=".stl,.sldprt" multiple data-bind="event: {change: uploadSelected}, enable: canUpload">
+                    <button class="btn btn-small" data-bind="click: toggleBrowser, enable: canUpload"><i class="fab fa-dropbox"></i> From PC Dropbox</button>
+                </div>
+                <div class="progress progress-striped active rs-progress" data-bind="visible: uploadProgress() !== null">
+                    <div class="bar" data-bind="style: {width: (uploadProgress() || 0) + '%'}"></div>
+                </div>
+
+                <div class="rs-browser" data-bind="visible: browserVisible">
+                    <div class="rs-crumbs">
+                        <a href="#" data-bind="click: function () { browse(''); }">Dropbox</a>
+                        <!-- ko foreach: crumbs -->
+                        / <a href="#" data-bind="text: name, click: function () { $parent.browse(path); }"></a>
+                        <!-- /ko -->
+                    </div>
+                    <div class="muted" data-bind="visible: browserLoading">Asking the PC…</div>
+                    <div class="rs-bad" data-bind="visible: browserError, text: browserError"></div>
+                    <ul class="rs-entries" data-bind="visible: !browserLoading()">
+                        <!-- ko foreach: browserDirs -->
+                        <li class="rs-entry"><a href="#" data-bind="click: function () { $parent.browse($parent.joinPath(name)); }"><i class="fas fa-folder"></i> <span data-bind="text: name"></span></a></li>
+                        <!-- /ko -->
+                        <!-- ko foreach: browserFiles -->
+                        <li class="rs-entry">
+                            <a href="#" data-bind="click: function () { $parent.fetchFile($data); }"><i class="fas" data-bind="css: /\.sldprt$/i.test(name) ? 'fa-cube' : 'fa-file'"></i> <span data-bind="text: name"></span></a>
+                            <span class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></span>
+                            <span class="muted" data-bind="visible: $parent.fetching()[$parent.joinPath(name)]">fetching…</span>
+                        </li>
+                        <!-- /ko -->
+                        <li class="muted" data-bind="visible: !browserDirs().length && !browserFiles().length && !browserError()">No STL or SolidWorks files here.</li>
+                        <li class="muted" data-bind="visible: browserTruncated">Only the first 2000 entries are shown.</li>
+                    </ul>
+                </div>
+
+                <div class="rs-table-wrap">
+                    <table class="table table-condensed rs-table rs-model-table" data-bind="visible: models().length">
+                        <tbody data-bind="foreach: models">
+                            <tr>
+                                <td class="rs-name"><span data-bind="text: name"></span>
+                                    <span class="label rs-src" data-bind="text: source, visible: source !== 'upload'"></span></td>
+                                <td class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></td>
+                                <td class="rs-actions">
+                                    <button class="btn btn-mini btn-primary" data-bind="click: $parent.addToPlate"><i class="fas fa-plus"></i> Add</button>
+                                    <button class="btn btn-mini" title="Delete" data-bind="click: $parent.deleteModel, enable: $parent.canDelete"><i class="far fa-trash-alt"></i></button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p class="muted" data-bind="visible: !models().length">No models yet. Upload an STL or SolidWorks part, or pick one from your PC's Dropbox.</p>
+                </div>
+            </div>
+
+            <div class="rs-section">
+                <h4>Jobs <button class="btn btn-mini pull-right" data-bind="click: clearFinished, visible: hasFinished">Clear finished</button></h4>
+                <div data-bind="foreach: tasks">
+                    <div class="rs-task">
+                        <div class="rs-task-head">
+                            <span class="label" data-bind="text: state, css: $parent.stateClass(state())"></span>
+                            <strong data-bind="text: title"></strong>
+                            <button class="btn btn-mini pull-right" data-bind="visible: cancellable, click: $parent.cancelTask">Cancel</button>
+                        </div>
+                        <div class="progress rs-progress" data-bind="visible: state() === 'running'">
+                            <div class="bar" data-bind="style: {width: Math.round(progress() * 100) + '%'}"></div>
+                        </div>
+                        <div class="muted rs-meta" data-bind="visible: state() === 'running' || state() === 'queued', text: stage"></div>
+                        <div class="rs-bad" data-bind="visible: error, text: error"></div>
+                        <div class="rs-meta" data-bind="visible: details, text: details"></div>
+                        <div class="rs-meta" data-bind="visible: printNote, text: printNote, css: printStarted() ? 'rs-ok' : 'rs-warn'"></div>
+                    </div>
+                </div>
+                <p class="muted" data-bind="visible: !tasks().length">No jobs yet.</p>
+            </div>
+        </div>
+    </div>
+</div>
