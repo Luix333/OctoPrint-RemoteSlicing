@@ -6,6 +6,22 @@
  */
 $(function () {
     var PLATE_KEY = "remoteslicing.plate";
+    var PREVIEW_KEY = "remoteslicing.previewOpen";
+    var REMEMBER_KEY = "remoteslicing.rememberFolder";
+    var FOLDER_KEY = "remoteslicing.dropboxFolder";
+
+    // Per-browser conveniences; private mode or blocked storage just means nothing is remembered.
+    function loadPref(key, fallback) {
+        try {
+            var raw = localStorage.getItem(key);
+            return raw === null ? fallback : JSON.parse(raw);
+        } catch (e) {
+            return fallback;
+        }
+    }
+    function savePref(key, value) {
+        try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* not remembered */ }
+    }
     var BED = window.RemoteSlicingBed;
 
     function TaskRow(d) {
@@ -401,11 +417,20 @@ $(function () {
             return _.map(parts, function (name, i) { return {name: name, path: parts.slice(0, i + 1).join("/")}; });
         });
         self.joinPath = function (name) { return self.browserPath() ? self.browserPath() + "/" + name : name; };
+        self.rememberFolder = ko.observable(loadPref(REMEMBER_KEY, true));
+        self.rememberFolder.subscribe(function (on) {
+            savePref(REMEMBER_KEY, on);
+            savePref(FOLDER_KEY, on ? self.browserPath() : "");
+        });
         self.toggleBrowser = function () {
             self.browserVisible(!self.browserVisible());
-            if (self.browserVisible()) { self.browse(self.browserPath()); }
+            if (self.browserVisible()) {
+                var start = self.browserPath() || (self.rememberFolder() ? loadPref(FOLDER_KEY, "") : "");
+                self.browse(start || "", true);
+            }
         };
-        self.browse = function (path) {
+        self.browse = function (path, fallbackToRoot) {
+            self.fallbackToRoot = !!fallbackToRoot && !!path;  // a remembered folder that has gone away
             self.browserLoading(true);
             self.browserError("");
             clearTimeout(listingTimer);
@@ -413,6 +438,12 @@ $(function () {
                 .done(function (resp) {
                     self.requestId = resp.request_id;
                     self.browserPath(path);
+                    var early = self.earlyListings[resp.request_id];
+                    if (early) {
+                        delete self.earlyListings[resp.request_id];
+                        self.onListing(early);
+                        return;
+                    }
                     listingTimer = setTimeout(function () {
                         if (self.browserLoading()) {
                             self.browserLoading(false);
@@ -425,9 +456,22 @@ $(function () {
                     self.browserError((xhr.responseJSON && xhr.responseJSON.error) || "Could not list the folder.");
                 });
         };
+        // The agent's answer arrives over the socket and can beat the HTTP reply that tells us its request id,
+        // so answers are kept briefly and matched up from either side.
+        self.earlyListings = {};
         self.onListing = function (d) {
-            if (d.request_id !== self.requestId) { return; }
+            if (d.request_id !== self.requestId) {
+                self.earlyListings[d.request_id] = d;
+                _.each(_.keys(self.earlyListings).slice(0, -5), function (k) { delete self.earlyListings[k]; });
+                return;
+            }
             clearTimeout(listingTimer);
+            if (d.error && self.fallbackToRoot) {
+                self.fallbackToRoot = false;
+                self.browse("");
+                return;
+            }
+            if (!d.error && self.rememberFolder()) { savePref(FOLDER_KEY, d.path || ""); }
             self.browserLoading(false);
             self.browserError(d.error || "");
             self.browserDirs(d.dirs || []);
@@ -442,6 +486,107 @@ $(function () {
                     var f = _.clone(self.fetching()); f[path] = true; self.fetching(f);
                 })
                 .fail(self.failure("Could not fetch " + file.name));
+        };
+
+        // ------------------------------------------------------------------ preview panel
+        self.previewOpen = ko.observable(loadPref(PREVIEW_KEY, true));
+        self.previewModelId = ko.observable(null);  // a library model clicked for preview
+        self.view = {az: -30, el: 30};
+        self.togglePreview = function () {
+            self.previewOpen(!self.previewOpen());
+            savePref(PREVIEW_KEY, self.previewOpen());
+            if (self.previewOpen()) { setTimeout(function () { self.drawPreview(false); }, 0); }
+        };
+        self.previewModel = function (model) {
+            self.selectItem(null);
+            self.previewModelId(model.id);
+            if (!self.previewOpen()) { self.togglePreview(); }
+        };
+        // What to show: the selected plate model as it will be printed, else the library model last clicked.
+        self.previewTarget = ko.pureComputed(function () {
+            var uid = self.selectedUid();
+            var it = uid && _.find(self.items(), function (i) { return i.uid === uid; });
+            if (it) {
+                return {modelId: it.modelId, name: it.name, tiltX: Number(it.tiltX()), tiltY: Number(it.tiltY()),
+                        rotation: Number(it.rotation()) || 0, color: self.extruderColor(Number(it.extruder()))};
+            }
+            var id = self.previewModelId();
+            var model = id && _.find(self.models(), function (m) { return m.id === id; });
+            return model ? {modelId: model.id, name: model.name, tiltX: 0, tiltY: 0, rotation: 0, color: "#a8b4be"} : null;
+        }).extend({rateLimit: 30});
+        self.previewTitle = ko.pureComputed(function () { var t = self.previewTarget(); return t ? t.name : ""; });
+        self.previewSize = ko.observable("");
+        self.previewBusy = ko.observable(false);
+        self.setView = function (az, el) { self.view.az = az; self.view.el = el; self.drawPreview(false); };
+
+        self.drawPreview = function (quick) {
+            var canvas = document.getElementById("remoteslicing_preview");
+            var target = self.previewTarget();
+            if (!canvas || !self.previewOpen()) { return; }
+            var cssW = canvas.parentNode.clientWidth || 300;
+            var cssH = Math.round(Math.min(cssW * 0.75, 380));
+            var dpr = window.devicePixelRatio || 1;
+            if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+                canvas.width = Math.round(cssW * dpr);
+                canvas.height = Math.round(cssH * dpr);
+                canvas.style.width = cssW + "px";
+                canvas.style.height = cssH + "px";
+            }
+            var ctx = canvas.getContext("2d");
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.fillStyle = getComputedStyle(canvas).getPropertyValue("--rs-bed").trim() || "#2b2f33";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            if (!target) { self.previewSize(""); return; }
+            var token = self.previewToken = (self.previewToken || 0) + 1;
+            self.previewBusy(true);
+            self.loadMesh(target.modelId).done(function (mesh) {
+                if (token !== self.previewToken) { return; }  // a newer request superseded this one
+                self.previewBusy(false);
+                var m = BED.mul3(BED.viewMatrix(self.view.az, self.view.el), BED.modelMatrix(target.tiltX, target.tiltY, target.rotation));
+                var longest = Math.max(canvas.width, canvas.height) * 0.9;
+                var r = BED.renderView(mesh.xyz, mesh.count, m, {maxPx: quick ? Math.min(240, longest) : longest, maxPpm: 60});
+                var sprite = BED.spriteCanvas(r, target.color);
+                var k = Math.min(canvas.width * 0.9 / r.width, canvas.height * 0.9 / r.height);
+                var w = r.width * k, h = r.height * k;
+                ctx.imageSmoothingEnabled = true;
+                ctx.drawImage(sprite, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+                var size = BED.modelSize(mesh.xyz, mesh.count, target.tiltX, target.tiltY);
+                self.previewSize(size[0].toFixed(1) + " × " + size[1].toFixed(1) + " × " + size[2].toFixed(1) + " mm");
+            }).fail(function (msg) {
+                self.previewBusy(false);
+                self.previewSize("could not load: " + msg);
+            });
+        };
+
+        self.attachPreview = function () {
+            var canvas = document.getElementById("remoteslicing_preview");
+            if (!canvas) { return; }
+            canvas.style.touchAction = "none";
+            var drag = null, pending = false;
+            var redraw = function (quick) {
+                if (pending) { return; }
+                pending = true;
+                requestAnimationFrame(function () { pending = false; self.drawPreview(quick); });
+            };
+            canvas.addEventListener("pointerdown", function (e) {
+                drag = {x: e.clientX, y: e.clientY, az: self.view.az, el: self.view.el};
+                try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
+            });
+            canvas.addEventListener("pointermove", function (e) {
+                if (!drag) { return; }
+                self.view.az = drag.az - (e.clientX - drag.x) * 0.5;
+                self.view.el = Math.max(-30, Math.min(90, drag.el + (e.clientY - drag.y) * 0.5));
+                redraw(true);
+            });
+            var end = function () { if (drag) { drag = null; self.drawPreview(false); } };
+            canvas.addEventListener("pointerup", end);
+            canvas.addEventListener("pointercancel", end);
+            canvas.addEventListener("dblclick", function () { self.setView(-30, 30); });
+            self.previewTarget.subscribe(function () { self.drawPreview(false); });
+            if (window.ResizeObserver) {
+                new ResizeObserver(function () { self.drawPreview(false); }).observe(canvas.parentNode);
+            }
+            self.drawPreview(false);
         };
 
         // ------------------------------------------------------------------ jobs
@@ -531,13 +676,14 @@ $(function () {
         };
 
         // ------------------------------------------------------------------ OctoPrint hooks
-        self.onAfterBinding = function () { self.attachBed(); self.watchWidth(); };
+        self.onAfterBinding = function () { self.attachBed(); self.attachPreview(); self.watchWidth(); };
         self.onStartupComplete = self.onUserLoggedIn = function () { self.refresh(); };
         self.onAfterTabChange = function (current) {
             if (current === "#tab_plugin_remoteslicing" && self.bed) {
                 var size = self.bedSize();
                 self.bed.setBed(size.width, size.depth);  // the canvas had no width while the tab was hidden
             }
+            if (current === "#tab_plugin_remoteslicing") { self.drawPreview(false); }
         };
         self.onDataUpdaterPluginMessage = function (plugin, data) {
             if (plugin !== "remoteslicing" || !data || !data.type) { return; }

@@ -387,3 +387,35 @@ test("renderTop handles a 200k-triangle mesh quickly", function () {
     api.renderTop(xyz, xyz.length / 3, 0, 0, 512);
     assert.ok(Date.now() - t0 < 2000, "took " + (Date.now() - t0) + " ms");
 });
+
+// ---- preview camera --------------------------------------------------------------------------------
+test("viewMatrix: elevation 90 is the top view, 0 is the front view, azimuth turns around", function () {
+    var xyz = new Float32Array(boxTris(0, 0, 0, 10, 20, 5)), n = xyz.length / 3;
+    var top = api.renderView(xyz, n, api.viewMatrix(0, 90), {maxPx: 160, maxPpm: 4});
+    assert.deepStrictEqual([top.width, top.height], [40, 80]);           // 10 x 20 mm at 4 px/mm
+    var front = api.renderView(xyz, n, api.viewMatrix(0, 0), {maxPx: 160, maxPpm: 4});
+    assert.deepStrictEqual([front.width, front.height], [40, 20]);       // 10 wide, 5 tall
+    for (var i = 0; i < front.depth.length; i++) { assert.ok(Math.abs(front.depth[i]) < 1e-4); }  // front face y=0 is nearest
+    var side = api.renderView(xyz, n, api.viewMatrix(90, 0), {maxPx: 160, maxPpm: 4});
+    assert.deepStrictEqual([side.width, side.height], [80, 20]);         // 20 deep, 5 tall
+});
+
+test("renderView draws meshes with inverted winding too (two-sided) and fills an iso view", function () {
+    var tris = boxTris(0, 0, 0, 20, 20, 2).concat(boxTris(8, 8, 2, 12, 12, 10));
+    var flipped = [];
+    for (var i = 0; i < tris.length; i += 9) { flipped.push(tris[i], tris[i + 1], tris[i + 2], tris[i + 6], tris[i + 7], tris[i + 8], tris[i + 3], tris[i + 4], tris[i + 5]); }
+    [tris, flipped].forEach(function (t) {
+        var xyz = new Float32Array(t);
+        var r = api.renderView(xyz, xyz.length / 3, api.viewMatrix(30, 30), {maxPx: 200});
+        var filled = 0;
+        for (var k = 0; k < r.shade.length; k++) { if (r.shade[k]) filled++; }
+        assert.ok(filled / r.shade.length > 0.45, "iso view filled " + (filled / r.shade.length).toFixed(2));
+    });
+});
+
+test("modelSize follows the tilt", function () {
+    var xyz = new Float32Array(boxTris(0, 0, 0, 10, 20, 5)), n = xyz.length / 3;
+    assert.deepStrictEqual(api.modelSize(xyz, n, 0, 0).map(Math.round), [10, 20, 5]);
+    assert.deepStrictEqual(api.modelSize(xyz, n, 90, 0).map(Math.round), [10, 5, 20]);
+    assert.deepStrictEqual(api.modelSize(xyz, n, 0, 90).map(Math.round), [5, 20, 10]);
+});

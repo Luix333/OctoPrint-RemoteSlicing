@@ -61,6 +61,29 @@
         </div>
 
         <div class="rs-side">
+            <div class="rs-section rs-preview">
+                <h4 class="rs-collapse" data-bind="click: togglePreview" title="Show or hide the preview">
+                    <i class="fas" data-bind="css: previewOpen() ? 'fa-chevron-down' : 'fa-chevron-right'"></i> Preview
+                    <span class="muted rs-meta rs-preview-name" data-bind="text: previewTitle"></span>
+                </h4>
+                <div data-bind="visible: previewOpen">
+                    <div class="rs-preview-wrap">
+                        <canvas id="remoteslicing_preview" title="Drag to turn it around, double-click to reset"></canvas>
+                        <div class="rs-preview-hint muted" data-bind="visible: !previewTarget()">Select a model on the plate, or click a model's name in the library.</div>
+                        <div class="rs-preview-hint muted" data-bind="visible: previewTarget() && previewBusy()">Loading…</div>
+                    </div>
+                    <div class="rs-preview-bar">
+                        <div class="btn-group">
+                            <button class="btn btn-mini" data-bind="click: function () { setView(-30, 30); }">Iso</button>
+                            <button class="btn btn-mini" data-bind="click: function () { setView(0, 90); }">Top</button>
+                            <button class="btn btn-mini" data-bind="click: function () { setView(0, 0); }">Front</button>
+                            <button class="btn btn-mini" data-bind="click: function () { setView(90, 0); }">Side</button>
+                        </div>
+                        <span class="muted rs-meta" data-bind="text: previewSize"></span>
+                    </div>
+                </div>
+            </div>
+
             <div class="rs-section">
                 <h4>Models</h4>
                 <div class="rs-upload">
@@ -72,6 +95,7 @@
                 </div>
 
                 <div class="rs-browser" data-bind="visible: browserVisible">
+                    <label class="checkbox rs-remember muted"><input type="checkbox" data-bind="checked: rememberFolder"> Remember folder</label>
                     <div class="rs-crumbs">
                         <a href="#" data-bind="click: function () { browse(''); }">Dropbox</a>
                         <!-- ko foreach: crumbs -->
@@ -100,7 +124,7 @@
                     <table class="table table-condensed rs-table rs-model-table" data-bind="visible: models().length">
                         <tbody data-bind="foreach: models">
                             <tr>
-                                <td class="rs-name"><span data-bind="text: name"></span>
+                                <td class="rs-name"><a href="#" title="Preview" data-bind="text: name, click: $parent.previewModel"></a>
                                     <span class="label rs-src" data-bind="text: source, visible: source !== 'upload'"></span></td>
                                 <td class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></td>
                                 <td class="rs-actions">

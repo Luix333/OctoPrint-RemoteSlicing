@@ -86,3 +86,14 @@
 .remoteslicing .rs-task:last-child { border-bottom: 0; }
 .remoteslicing .rs-task-head { display: flex; align-items: center; gap: 6px; }
 .remoteslicing .rs-task-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* preview panel */
+.remoteslicing .rs-collapse { cursor: pointer; user-select: none; }
+.remoteslicing .rs-collapse i { width: 12px; color: var(--rs-muted); }
+.remoteslicing .rs-preview-name { font-weight: normal; margin-left: 6px; }
+.remoteslicing .rs-preview-wrap { position: relative; width: 100%; border-radius: 4px; overflow: hidden; }
+.remoteslicing #remoteslicing_preview { display: block; cursor: grab; }
+.remoteslicing .rs-preview-hint { position: absolute; left: 8px; right: 8px; top: 45%; text-align: center; pointer-events: none; color: var(--rs-bed-text); }
+.remoteslicing .rs-preview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-top: 4px; }
+.remoteslicing .rs-remember { font-size: 12px; float: right; margin: 0; }
+.remoteslicing .rs-remember input { margin-top: 1px; }

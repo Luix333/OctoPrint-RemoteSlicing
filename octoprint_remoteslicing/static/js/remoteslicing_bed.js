@@ -127,28 +127,62 @@
      * one pixel is 1/ppm mm. shade[i] is 0 for empty pixels, else 1..255 brightness: faces lit from the
      * back-left-above, higher surfaces a little brighter. depth[i] is the top surface's Z (for tests).
      */
-    api.renderTop = function (xyz, count, tiltX, tiltY, maxPx) {
-        maxPx = maxPx || 512;
-        var ax = (tiltX || 0) * Math.PI / 180, ay = (tiltY || 0) * Math.PI / 180;
-        var cx = Math.cos(ax), sx = Math.sin(ax), cy = Math.cos(ay), sy = Math.sin(ay);
+    /* 3x3 matrix helpers (row-major arrays of 9). */
+    function mul3(a, b) {
+        var r = [];
+        for (var i = 0; i < 3; i++) {
+            for (var j = 0; j < 3; j++) {
+                r.push(a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j]);
+            }
+        }
+        return r;
+    }
+    function rotX(deg) { var t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t); return [1, 0, 0, 0, c, -s, 0, s, c]; }
+    function rotY(deg) { var t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t); return [c, 0, s, 0, 1, 0, -s, 0, c]; }
+    function rotZ(deg) { var t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t); return [c, -s, 0, s, c, 0, 0, 0, 1]; }
+
+    api.mul3 = mul3;
+
+    /* The model's orientation on the bed: tilt about X, then Y, then the bed rotation about Z (as place()). */
+    api.modelMatrix = function (tiltX, tiltY, rotation) {
+        return mul3(rotZ(rotation || 0), mul3(rotY(tiltY || 0), rotX(tiltX || 0)));
+    };
+
+    /*
+     * Camera for the preview: azimuth turns the view around the model (0 = looking from the front, +Y away),
+     * elevation is the angle above the horizon (90 = straight down = the bed view). The view looks down -Z.
+     */
+    api.viewMatrix = function (azimuth, elevation) {
+        return mul3(rotX(-(90 - elevation)), rotZ(-azimuth));
+    };
+
+    /*
+     * Z-buffered, flat-shaded orthographic raster of the mesh after applying the 3x3 matrix m (row-major):
+     * x right, y up the image, z towards the viewer. Pixel (u, v): u along +x, v DOWN the image (row 0 is the
+     * top, maxY); one pixel is 1/ppm mm. shade[i] is 0 for empty pixels, else 1..255. depth[i] is the
+     * visible surface's z. Options: maxPx (longest side, default 512), cull (skip faces pointing away from
+     * the viewer), heightShade (higher surfaces brighter).
+     */
+    api.renderView = function (xyz, count, m, opts) {
+        opts = opts || {};
+        var maxPx = opts.maxPx || 512, cull = !!opts.cull, heightShade = !!opts.heightShade;
         var v = new Float64Array(count * 3);
         var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
         for (var i = 0; i < count; i++) {
             var x = xyz[i * 3], y = xyz[i * 3 + 1], z = xyz[i * 3 + 2];
-            var y1 = y * cx - z * sx, z1 = y * sx + z * cx;            // about X
-            var X = x * cy + z1 * sy, Y = y1, Z = -x * sy + z1 * cy;    // about Y
+            var X = m[0] * x + m[1] * y + m[2] * z, Y = m[3] * x + m[4] * y + m[5] * z, Z = m[6] * x + m[7] * y + m[8] * z;
             v[i * 3] = X; v[i * 3 + 1] = Y; v[i * 3 + 2] = Z;
             if (X < minX) minX = X; if (X > maxX) maxX = X;
             if (Y < minY) minY = Y; if (Y > maxY) maxY = Y;
             if (Z < minZ) minZ = Z; if (Z > maxZ) maxZ = Z;
         }
         var span = Math.max(maxX - minX, maxY - minY, 1e-6);
-        var ppm = Math.min(8, maxPx / span);
+        var ppm = Math.min(opts.maxPpm || 8, maxPx / span);
         var W = Math.max(1, Math.ceil((maxX - minX) * ppm - 1e-6)), H = Math.max(1, Math.ceil((maxY - minY) * ppm - 1e-6));  // tilt leaves 5.0000001 mm
         var depth = new Float32Array(W * H), shade = new Uint8ClampedArray(W * H);
         for (var k = 0; k < depth.length; k++) depth[k] = -Infinity;
         var ln = Math.sqrt(0.35 * 0.35 + 0.45 * 0.45 + 1);
-        var lx = -0.35 / ln, ly = 0.45 / ln, lz = 1 / ln;               // light from back-left, above
+        var lx = -0.35 / ln, ly = 0.45 / ln, lz = 1 / ln;               // light from upper left, towards the viewer
         var zr = (maxZ - minZ) || 1;
 
         for (var t = 0; t + 2 < count; t += 3) {
@@ -156,7 +190,8 @@
             var ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2];
             var wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
             var nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
-            if (nz <= 0) continue;                                      // facing down or edge-on: hidden from above
+            if (nz === 0 || (cull && nz < 0)) continue;                 // edge-on, or (top view) facing away
+            if (nz < 0) { nx = -nx; ny = -ny; nz = -nz; }                // two-sided: light the side we see
             var nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
             var diffuse = Math.max(0, (nx * lx + ny * ly + nz * lz) / nl);
             var x0 = (v[a] - minX) * ppm, y0 = (maxY - v[a + 1]) * ppm, z0 = v[a + 2];
@@ -166,6 +201,7 @@
             if (area === 0) continue;
             var u0 = Math.max(0, Math.floor(Math.min(x0, x1, x2))), u1 = Math.min(W - 1, Math.ceil(Math.max(x0, x1, x2)));
             var v0 = Math.max(0, Math.floor(Math.min(y0, y1s, y2))), v1 = Math.min(H - 1, Math.ceil(Math.max(y0, y1s, y2)));
+            var base = heightShade ? 0.30 + 0.70 * diffuse : 0.22 + 0.78 * diffuse;
             for (var py = v0; py <= v1; py++) {
                 var cyp = py + 0.5;
                 for (var px = u0; px <= u1; px++) {
@@ -178,12 +214,36 @@
                     var idx = py * W + px;
                     if (zz <= depth[idx]) continue;
                     depth[idx] = zz;
-                    var lum = (0.30 + 0.70 * diffuse) * (0.70 + 0.30 * (zz - minZ) / zr);
+                    var lum = heightShade ? base * (0.70 + 0.30 * (zz - minZ) / zr) : base;
                     shade[idx] = 1 + Math.round(254 * Math.min(1, lum));
                 }
             }
         }
-        return {width: W, height: H, ppm: ppm, minX: minX, maxX: maxX, minY: minY, maxY: maxY, shade: shade, depth: depth};
+        return {width: W, height: H, ppm: ppm, minX: minX, maxX: maxX, minY: minY, maxY: maxY, minZ: minZ, maxZ: maxZ,
+                shade: shade, depth: depth};
+    };
+
+    /*
+     * Top-down render for the bed: the mesh as it lies after the tilt (tiltX about X, then tiltY about Y; same
+     * transform as tiltPoints), seen from above, faces lit from the back-left, higher surfaces a little brighter.
+     * Row 0 is the back edge (maxY).
+     */
+    api.renderTop = function (xyz, count, tiltX, tiltY, maxPx) {
+        return api.renderView(xyz, count, api.modelMatrix(tiltX, tiltY, 0), {maxPx: maxPx, cull: true, heightShade: true});
+    };
+
+    /* Size of the model in mm (x, y, z) as it would lie on the bed. */
+    api.modelSize = function (xyz, count, tiltX, tiltY) {
+        var m = api.modelMatrix(tiltX, tiltY, 0);
+        var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+        for (var i = 0; i < count; i++) {
+            for (var r = 0; r < 3; r++) {
+                var val = m[r * 3] * xyz[i * 3] + m[r * 3 + 1] * xyz[i * 3 + 1] + m[r * 3 + 2] * xyz[i * 3 + 2];
+                if (val < lo[r]) lo[r] = val;
+                if (val > hi[r]) hi[r] = val;
+            }
+        }
+        return [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
     };
 
     /* Canvas of a render tinted with a filament colour ("#rrggbb"). Browser only. */

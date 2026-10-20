@@ -51,8 +51,9 @@ class RemoteSlicingPlugin(
 
     # ---------------------------------------------------------------- startup
 
-    def on_after_startup(self):
-        # Load persisted state
+    def initialize(self):
+        # Runs before the server answers requests: the PC agent reconnects the moment OctoPrint is
+        # reachable, and its first heartbeat must find the queue already there.
         state = self._load_json(STATE_FILE, {})
         self._core = Core(self, get_settings=self._current_settings, state=state)
 
@@ -60,6 +61,7 @@ class RemoteSlicingPlugin(
         os.makedirs(os.path.dirname(self._model_path("x")), exist_ok=True)
         os.makedirs(os.path.dirname(self._source_path("x", "")), exist_ok=True)
 
+    def on_after_startup(self):
         # Periodic tick: expire leases, check pending prints
         self._timer = octoprint.util.RepeatedTimer(30, self._tick, daemon=True)
         self._timer.start()
