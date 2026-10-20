@@ -327,3 +327,63 @@ test("tiltPoints is right-handed: +90 about Y turns +Z into +X", function () {
     pts = api.tiltPoints(new Float32Array([0, 0, 0, 0, 0, 10]), 2, 90, 0);  // +Z goes to -Y about X
     assert.ok(Math.abs(pts[3] + 10) < 1e-6);
 });
+
+// ---- top-down render ---------------------------------------------------------------------------
+function boxTris(x0, y0, z0, x1, y1, z1) {
+    // 12 outward-facing triangles of an axis-aligned box, as a flat xyz array
+    var c = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+    var f = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]];
+    var out = [];
+    f.forEach(function (t) { t.forEach(function (i) { out.push(c[i][0], c[i][1], c[i][2]); }); });
+    return out;
+}
+
+test("renderTop: a flat box fills its whole raster at the top height", function () {
+    var xyz = new Float32Array(boxTris(0, 0, 0, 10, 20, 5));
+    var r = api.renderTop(xyz, xyz.length / 3, 0, 0, 512);
+    assert.strictEqual(r.ppm, 8);
+    assert.strictEqual(r.width, 80);
+    assert.strictEqual(r.height, 160);
+    var filled = 0;
+    for (var i = 0; i < r.shade.length; i++) { if (r.shade[i]) { filled++; assert.ok(Math.abs(r.depth[i] - 5) < 1e-4); } }
+    assert.strictEqual(filled, r.shade.length);
+});
+
+test("renderTop: the z-buffer keeps the higher surface and tilt changes the view", function () {
+    var tris = boxTris(0, 0, 0, 20, 20, 2).concat(boxTris(8, 8, 2, 12, 12, 10));  // post on a plate
+    var xyz = new Float32Array(tris);
+    var r = api.renderTop(xyz, xyz.length / 3, 0, 0, 200);
+    var at = function (mmX, mmY) { var u = Math.floor((mmX - r.minX) * r.ppm), v = Math.floor((r.maxY - mmY) * r.ppm); return u + v * r.width; };
+    assert.ok(Math.abs(r.depth[at(10, 10)] - 10) < 1e-4, "post top seen in the middle");
+    assert.ok(Math.abs(r.depth[at(2, 2)] - 2) < 1e-4, "plate top seen at the corner");
+    assert.ok(r.shade[at(10, 10)] > r.shade[at(2, 2)], "higher surface drawn brighter");
+    var back = at(10, 19), front = at(10, 1);  // row 0 is the back edge: +Y is up the image
+    assert.ok(back < front);
+    var tilted = api.renderTop(new Float32Array(boxTris(0, 0, 0, 10, 20, 5)), 36, 90, 0, 512);
+    assert.strictEqual(tilted.width, 80);   // 10 mm
+    assert.strictEqual(tilted.height, 40);  // 5 mm: stood on its 10 x 5 face
+});
+
+test("spriteMatrix puts the render's corners on the placed footprint's corners", function () {
+    var xyz = new Float32Array(boxTris(-3, -7, 0, 7, 13, 5));
+    var count = xyz.length / 3;
+    var r = api.renderTop(xyz, count, 0, 0, 512);
+    var hull = api.convexHull(api.tiltPoints(xyz, count, 0, 0), count);
+    var view = {scale: 2, offsetX: 30, offsetY: 10, depth: 350};
+    var m = api.spriteMatrix(r, hull, 100, 120, 30, view);
+    var placed = api.place(hull, 100, 120, 30);
+    var screen = placed.map(function (p) { return [view.offsetX + p[0] * view.scale, view.offsetY + (view.depth - p[1]) * view.scale]; });
+    [[0, 0], [r.width, 0], [0, r.height], [r.width, r.height]].forEach(function (uv) {
+        var sx = m[0] * uv[0] + m[2] * uv[1] + m[4], sy = m[1] * uv[0] + m[3] * uv[1] + m[5];
+        var best = Math.min.apply(null, screen.map(function (q) { return Math.hypot(q[0] - sx, q[1] - sy); }));
+        assert.ok(best < 0.2, "corner " + uv + " is " + best.toFixed(3) + " px from the footprint");
+    });
+});
+
+test("renderTop handles a 200k-triangle mesh quickly", function () {
+    var tris = [];
+    for (var i = 0; i < 200000 / 12; i++) { var x = (i % 130) * 2, y = Math.floor(i / 130) * 2; tris.push.apply(tris, boxTris(x, y, 0, x + 1.5, y + 1.5, 1 + (i % 7))); }
+    var xyz = new Float32Array(tris), t0 = Date.now();
+    api.renderTop(xyz, xyz.length / 3, 0, 0, 512);
+    assert.ok(Date.now() - t0 < 2000, "took " + (Date.now() - t0) + " ms");
+});

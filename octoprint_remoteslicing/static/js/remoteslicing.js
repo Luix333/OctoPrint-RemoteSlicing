@@ -194,6 +194,7 @@ $(function () {
             });
             it.mesh = null;
             it.hull = ko.observable(null);
+            it.render = ko.observable(null);  // top-down raster for the bed, per tilt
             it.loading = ko.observable(true);
             it.error = ko.observable("");
             it.extruder.subscribe(function (v) { self.lastExtruder = v; });
@@ -206,7 +207,8 @@ $(function () {
                     .then(function (r) { if (!r.ok) { throw new Error("download failed (" + r.status + ")"); } return r.arrayBuffer(); })
                     .then(function (buf) {
                         var parsed = BED.parseStl(buf);
-                        parsed.hulls = {};  // "tiltX,tiltY" -> footprint
+                        parsed.hulls = {};    // "tiltX,tiltY" -> footprint
+                        parsed.renders = {};  // "tiltX,tiltY" -> top-down raster (with .sprites per colour)
                         d.resolve(parsed);
                     })
                     .catch(function (e) { delete self.meshes[modelId]; d.reject(e.message || String(e)); });
@@ -216,6 +218,19 @@ $(function () {
         };
 
         // Footprint of the model as it lies on the bed: the convex hull of its X/Y after the tilt.
+        function renderFor(mesh, tiltX, tiltY) {
+            var key = tiltX + "," + tiltY;
+            if (!mesh.renders[key]) {
+                mesh.renders[key] = BED.renderTop(mesh.xyz, mesh.count, tiltX, tiltY, 512);
+                mesh.renders[key].sprites = {};
+            }
+            return mesh.renders[key];
+        }
+        function spriteFor(render, color) {
+            if (!render.sprites[color]) { render.sprites[color] = BED.spriteCanvas(render, color); }
+            return render.sprites[color];
+        }
+
         function hullFor(mesh, tiltX, tiltY) {
             var key = tiltX + "," + tiltY;
             if (!mesh.hulls[key]) {
@@ -228,7 +243,11 @@ $(function () {
         self.makeItem = function (model, x, y, rotation, extruder, tiltX, tiltY) {
             var item = new Item(model, x, y, rotation, extruder, tiltX, tiltY);
             var refresh = function () {
-                if (item.mesh) { item.hull(hullFor(item.mesh, Number(item.tiltX()), Number(item.tiltY()))); }
+                if (item.mesh) {
+                    var tx = Number(item.tiltX()), ty = Number(item.tiltY());
+                    item.render(renderFor(item.mesh, tx, ty));
+                    item.hull(hullFor(item.mesh, tx, ty));
+                }
             };
             item.tiltX.subscribe(refresh);
             item.tiltY.subscribe(refresh);
@@ -268,8 +287,10 @@ $(function () {
             return _.compact(_.map(self.items(), function (it) {
                 var hull = it.hull();
                 if (!hull) { return null; }
+                var color = self.extruderColor(Number(it.extruder())), render = it.render();
                 return {uid: it.uid, name: it.name, hull: hull, x: Number(it.x()) || 0, y: Number(it.y()) || 0,
-                        rotation: Number(it.rotation()) || 0, color: self.extruderColor(Number(it.extruder()))};
+                        rotation: Number(it.rotation()) || 0, color: color,
+                        render: render, sprite: render ? spriteFor(render, color) : null};
             }));
         });
         self.problems = ko.pureComputed(function () {

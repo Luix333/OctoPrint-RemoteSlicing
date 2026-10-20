@@ -118,6 +118,112 @@
     };
 
     /* ------------------------------------------------------------------ */
+    /*  Top-down render: what the model looks like from above, as it lies  */
+    /* ------------------------------------------------------------------ */
+
+    /*
+     * Z-buffered, flat-shaded raster of the mesh seen from above after the tilt (same transform as
+     * tiltPoints). Pixel (u, v): u along +X, v DOWN the image = towards -Y, so row 0 is the back edge (maxY);
+     * one pixel is 1/ppm mm. shade[i] is 0 for empty pixels, else 1..255 brightness: faces lit from the
+     * back-left-above, higher surfaces a little brighter. depth[i] is the top surface's Z (for tests).
+     */
+    api.renderTop = function (xyz, count, tiltX, tiltY, maxPx) {
+        maxPx = maxPx || 512;
+        var ax = (tiltX || 0) * Math.PI / 180, ay = (tiltY || 0) * Math.PI / 180;
+        var cx = Math.cos(ax), sx = Math.sin(ax), cy = Math.cos(ay), sy = Math.sin(ay);
+        var v = new Float64Array(count * 3);
+        var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (var i = 0; i < count; i++) {
+            var x = xyz[i * 3], y = xyz[i * 3 + 1], z = xyz[i * 3 + 2];
+            var y1 = y * cx - z * sx, z1 = y * sx + z * cx;            // about X
+            var X = x * cy + z1 * sy, Y = y1, Z = -x * sy + z1 * cy;    // about Y
+            v[i * 3] = X; v[i * 3 + 1] = Y; v[i * 3 + 2] = Z;
+            if (X < minX) minX = X; if (X > maxX) maxX = X;
+            if (Y < minY) minY = Y; if (Y > maxY) maxY = Y;
+            if (Z < minZ) minZ = Z; if (Z > maxZ) maxZ = Z;
+        }
+        var span = Math.max(maxX - minX, maxY - minY, 1e-6);
+        var ppm = Math.min(8, maxPx / span);
+        var W = Math.max(1, Math.ceil((maxX - minX) * ppm - 1e-6)), H = Math.max(1, Math.ceil((maxY - minY) * ppm - 1e-6));  // tilt leaves 5.0000001 mm
+        var depth = new Float32Array(W * H), shade = new Uint8ClampedArray(W * H);
+        for (var k = 0; k < depth.length; k++) depth[k] = -Infinity;
+        var ln = Math.sqrt(0.35 * 0.35 + 0.45 * 0.45 + 1);
+        var lx = -0.35 / ln, ly = 0.45 / ln, lz = 1 / ln;               // light from back-left, above
+        var zr = (maxZ - minZ) || 1;
+
+        for (var t = 0; t + 2 < count; t += 3) {
+            var a = t * 3, b = a + 3, c = a + 6;
+            var ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2];
+            var wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+            var nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+            if (nz <= 0) continue;                                      // facing down or edge-on: hidden from above
+            var nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+            var diffuse = Math.max(0, (nx * lx + ny * ly + nz * lz) / nl);
+            var x0 = (v[a] - minX) * ppm, y0 = (maxY - v[a + 1]) * ppm, z0 = v[a + 2];
+            var x1 = (v[b] - minX) * ppm, y1s = (maxY - v[b + 1]) * ppm, z1s = v[b + 2];
+            var x2 = (v[c] - minX) * ppm, y2 = (maxY - v[c + 1]) * ppm, z2 = v[c + 2];
+            var area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1s - y0);
+            if (area === 0) continue;
+            var u0 = Math.max(0, Math.floor(Math.min(x0, x1, x2))), u1 = Math.min(W - 1, Math.ceil(Math.max(x0, x1, x2)));
+            var v0 = Math.max(0, Math.floor(Math.min(y0, y1s, y2))), v1 = Math.min(H - 1, Math.ceil(Math.max(y0, y1s, y2)));
+            for (var py = v0; py <= v1; py++) {
+                var cyp = py + 0.5;
+                for (var px = u0; px <= u1; px++) {
+                    var cxp = px + 0.5;
+                    var e0 = ((x2 - x1) * (cyp - y1s) - (y2 - y1s) * (cxp - x1)) / area;
+                    var e1 = ((x0 - x2) * (cyp - y2) - (y0 - y2) * (cxp - x2)) / area;
+                    var e2 = 1 - e0 - e1;
+                    if (e0 < 0 || e1 < 0 || e2 < 0) continue;
+                    var zz = e0 * z0 + e1 * z1s + e2 * z2;
+                    var idx = py * W + px;
+                    if (zz <= depth[idx]) continue;
+                    depth[idx] = zz;
+                    var lum = (0.30 + 0.70 * diffuse) * (0.70 + 0.30 * (zz - minZ) / zr);
+                    shade[idx] = 1 + Math.round(254 * Math.min(1, lum));
+                }
+            }
+        }
+        return {width: W, height: H, ppm: ppm, minX: minX, maxX: maxX, minY: minY, maxY: maxY, shade: shade, depth: depth};
+    };
+
+    /* Canvas of a render tinted with a filament colour ("#rrggbb"). Browser only. */
+    api.spriteCanvas = function (render, color) {
+        var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(color || "") || [0, "88", "88", "88"];
+        var floor = 60;  // keep very dark filaments readable on the dark bed
+        var r = floor + parseInt(m[1], 16) * (255 - floor) / 255;
+        var g = floor + parseInt(m[2], 16) * (255 - floor) / 255;
+        var bl = floor + parseInt(m[3], 16) * (255 - floor) / 255;
+        var canvas = document.createElement("canvas");
+        canvas.width = render.width;
+        canvas.height = render.height;
+        var ctx = canvas.getContext("2d");
+        var img = ctx.createImageData(render.width, render.height);
+        var d = img.data, sh = render.shade;
+        for (var i = 0; i < sh.length; i++) {
+            if (!sh[i]) continue;
+            var f = sh[i] / 255;
+            d[i * 4] = r * f; d[i * 4 + 1] = g * f; d[i * 4 + 2] = bl * f; d[i * 4 + 3] = 255;
+        }
+        ctx.putImageData(img, 0, 0);
+        return canvas;
+    };
+
+    /*
+     * Canvas transform [a, b, c, d, e, f] that draws a render's pixels where api.place() puts the model:
+     * rotate about Z, move the rotated hull's bbox centre to (x, y), then the bed's mm -> CSS px mapping
+     * (screen x = offsetX + mm_x * scale, screen y = offsetY + (bedDepth - mm_y) * scale).
+     */
+    api.spriteMatrix = function (render, hull, x, y, rotation, view) {
+        var th = (rotation || 0) * Math.PI / 180, ct = Math.cos(th), st = Math.sin(th);
+        var bb = api.bbox(api.rotate(hull, rotation || 0));
+        var ox = x - (bb.minX + bb.maxX) / 2, oy = y - (bb.minY + bb.maxY) / 2;
+        var s = view.scale, k = s / render.ppm;
+        return [k * ct, -k * st, k * st, k * ct,
+                view.offsetX + s * (ct * render.minX - st * render.maxY + ox),
+                view.offsetY + s * (view.depth - st * render.minX - ct * render.maxY - oy)];
+    };
+
+    /* ------------------------------------------------------------------ */
     /*  Convex hull (Andrew's monotone chain)                              */
     /* ------------------------------------------------------------------ */
 
@@ -549,9 +655,7 @@
             var poly = p.poly;
             var item = p.item;
 
-            // Fill
-            ctx.fillStyle = item.color || "#888888";
-            ctx.globalAlpha = 0.6;
+            // Top-down render of the model when there is one, else a flat fill of its footprint
             ctx.beginPath();
             var sp0 = self.toScreen(poly[0][0], poly[0][1]);
             ctx.moveTo(sp0.x, sp0.y);
@@ -560,8 +664,20 @@
                 ctx.lineTo(spj.x, spj.y);
             }
             ctx.closePath();
-            ctx.fill();
-            ctx.globalAlpha = 1;
+            if (item.sprite && item.render) {
+                var mtx = api.spriteMatrix(item.render, item.hull, item.x, item.y, item.rotation,
+                    {scale: self.scale, offsetX: self.offsetX, offsetY: self.offsetY, depth: self.bedDepth});
+                ctx.save();
+                ctx.setTransform(dpr * mtx[0], dpr * mtx[1], dpr * mtx[2], dpr * mtx[3], dpr * mtx[4], dpr * mtx[5]);
+                ctx.imageSmoothingEnabled = true;
+                ctx.drawImage(item.sprite, 0, 0);
+                ctx.restore();
+            } else {
+                ctx.fillStyle = item.color || "#888888";
+                ctx.globalAlpha = 0.6;
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
 
             // Stroke
             var isSelected = item.uid === self.selectedUid;
@@ -585,18 +701,20 @@
             var hullWmm = b.maxX - b.minX;
             var hullWCss = hullWmm * self.scale;
             var name = item.name || "";
-            var maxChars = Math.floor(hullWCss / 7); // rough char width
-            if (maxChars > 0 && name.length > maxChars) {
+            var maxChars = Math.max(6, Math.floor((hullWCss + 40) / 6)); // label may overhang the model a little
+            if (name.length > maxChars) {
                 name = name.substring(0, maxChars - 1) + "…";
             }
             if (name) {
-                var ctr = self.toScreen((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
+                // under the model (its front edge), so the top-down render stays visible
+                var ctr = self.toScreen((b.minX + b.maxX) / 2, b.minY);
                 ctx.fillStyle = colors.text;
-                ctx.font = "12px sans-serif";
+                ctx.font = "11px sans-serif";
                 ctx.textAlign = "center";
-                ctx.textBaseline = "middle";
+                ctx.textBaseline = "top";
+                ctx.globalAlpha = 0.9;
+                ctx.fillText(name, ctr.x, ctr.y + 3);
                 ctx.globalAlpha = 1;
-                ctx.fillText(name, ctr.x, ctr.y);
             }
 
             // Rotate handle for selected model
