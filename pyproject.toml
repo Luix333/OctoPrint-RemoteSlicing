@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "OctoPrint-RemoteSlicing"
-version = "0.1.3"
+version = "0.1.4"
 description = "Place models on a 2D bed and slice them on your PC's CuraEngine with your last Cura settings"
 readme = "README.md"
 requires-python = ">=3.7"

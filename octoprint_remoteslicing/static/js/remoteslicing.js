@@ -6,7 +6,8 @@
  */
 $(function () {
     var PLATE_KEY = "remoteslicing.plate";
-    var PREVIEW_KEY = "remoteslicing.previewOpen";
+    var PREVIEW_KEY = "remoteslicing.previewOpen";   // old true/false setting, read once for the default
+    var PREVIEW_MODE_KEY = "remoteslicing.previewMode";
     var REMEMBER_KEY = "remoteslicing.rememberFolder";
     var FOLDER_KEY = "remoteslicing.dropboxFolder";
 
@@ -489,18 +490,20 @@ $(function () {
         };
 
         // ------------------------------------------------------------------ preview panel
-        self.previewOpen = ko.observable(loadPref(PREVIEW_KEY, true));
+        // "compact" (beside the model list), "full" (whole width) or "collapsed" (hidden)
+        self.previewMode = ko.observable(loadPref(PREVIEW_MODE_KEY, loadPref(PREVIEW_KEY, true) ? "compact" : "collapsed"));
+        self.previewOpen = ko.pureComputed(function () { return self.previewMode() !== "collapsed"; });
         self.previewModelId = ko.observable(null);  // a library model clicked for preview
         self.view = {az: -30, el: 30};
-        self.togglePreview = function () {
-            self.previewOpen(!self.previewOpen());
-            savePref(PREVIEW_KEY, self.previewOpen());
-            if (self.previewOpen()) { setTimeout(function () { self.drawPreview(false); }, 0); }
+        self.setPreviewMode = function (mode) {
+            self.previewMode(mode);
+            savePref(PREVIEW_MODE_KEY, mode);
+            if (mode !== "collapsed") { setTimeout(function () { self.drawPreview(false); }, 0); }  // after layout
         };
         self.previewModel = function (model) {
             self.selectItem(null);
             self.previewModelId(model.id);
-            if (!self.previewOpen()) { self.togglePreview(); }
+            if (!self.previewOpen()) { self.setPreviewMode("compact"); }
         };
         // What to show: the selected plate model as it will be printed, else the library model last clicked.
         self.previewTarget = ko.pureComputed(function () {
@@ -524,7 +527,7 @@ $(function () {
             var target = self.previewTarget();
             if (!canvas || !self.previewOpen()) { return; }
             var cssW = canvas.parentNode.clientWidth || 300;
-            var cssH = Math.round(Math.min(cssW * 0.75, 380));
+            var cssH = Math.round(Math.min(cssW * (self.previewMode() === "full" ? 0.75 : 0.9), 380));
             var dpr = window.devicePixelRatio || 1;
             if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
                 canvas.width = Math.round(cssW * dpr);

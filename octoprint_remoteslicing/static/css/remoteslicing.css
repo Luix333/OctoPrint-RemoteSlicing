@@ -88,8 +88,6 @@
 .remoteslicing .rs-task-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* preview panel */
-.remoteslicing .rs-collapse { cursor: pointer; user-select: none; }
-.remoteslicing .rs-collapse i { width: 12px; color: var(--rs-muted); }
 .remoteslicing .rs-preview-name { font-weight: normal; margin-left: 6px; }
 .remoteslicing .rs-preview-wrap { position: relative; width: 100%; border-radius: 4px; overflow: hidden; }
 .remoteslicing #remoteslicing_preview { display: block; cursor: grab; }
@@ -97,3 +95,12 @@
 .remoteslicing .rs-preview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-top: 4px; }
 .remoteslicing .rs-remember { font-size: 12px; float: right; margin: 0; }
 .remoteslicing .rs-remember input { margin-top: 1px; }
+
+/* model list + preview: side by side (compact), preview on its own row (full), or preview hidden */
+.remoteslicing .rs-library-row { display: flex; flex-wrap: wrap; gap: 0 14px; align-items: flex-start; }
+.remoteslicing .rs-library-row .rs-models { flex: 1 1 280px; min-width: 0; }
+.remoteslicing .rs-library-row .rs-preview { flex: 0 1 240px; min-width: 200px; }
+.remoteslicing .rs-library-row.rs-preview-full .rs-preview { flex: 1 1 100%; order: -1; }
+.remoteslicing .rs-preview h4 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remoteslicing .rs-preview-modes .btn { padding: 0 5px; }
+.remoteslicing .rs-preview-name { display: inline-block; max-width: 45%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }

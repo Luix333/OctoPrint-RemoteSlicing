@@ -61,15 +61,73 @@
         </div>
 
         <div class="rs-side">
-            <div class="rs-section rs-preview">
-                <h4 class="rs-collapse" data-bind="click: togglePreview" title="Show or hide the preview">
-                    <i class="fas" data-bind="css: previewOpen() ? 'fa-chevron-down' : 'fa-chevron-right'"></i> Preview
-                    <span class="muted rs-meta rs-preview-name" data-bind="text: previewTitle"></span>
-                </h4>
-                <div data-bind="visible: previewOpen">
+            <div class="rs-library-row" data-bind="css: {'rs-preview-full': previewMode() === 'full'}">
+                <div class="rs-section rs-models">
+                    <h4>Models
+                        <button class="btn btn-mini pull-right" title="Show the preview" data-bind="visible: previewMode() === 'collapsed', click: function () { setPreviewMode('compact'); }"><i class="far fa-eye"></i> Preview</button>
+                    </h4>
+                    <div class="rs-upload">
+                        <input type="file" id="remoteslicing_file" accept=".stl,.sldprt" multiple data-bind="event: {change: uploadSelected}, enable: canUpload">
+                        <button class="btn btn-small" data-bind="click: toggleBrowser, enable: canUpload"><i class="fab fa-dropbox"></i> From PC Dropbox</button>
+                    </div>
+                    <div class="progress progress-striped active rs-progress" data-bind="visible: uploadProgress() !== null">
+                        <div class="bar" data-bind="style: {width: (uploadProgress() || 0) + '%'}"></div>
+                    </div>
+
+                    <div class="rs-browser" data-bind="visible: browserVisible">
+                        <label class="checkbox rs-remember muted"><input type="checkbox" data-bind="checked: rememberFolder"> Remember folder</label>
+                        <div class="rs-crumbs">
+                            <a href="#" data-bind="click: function () { browse(''); }">Dropbox</a>
+                            <!-- ko foreach: crumbs -->
+                            / <a href="#" data-bind="text: name, click: function () { $parent.browse(path); }"></a>
+                            <!-- /ko -->
+                        </div>
+                        <div class="muted" data-bind="visible: browserLoading">Asking the PC…</div>
+                        <div class="rs-bad" data-bind="visible: browserError, text: browserError"></div>
+                        <ul class="rs-entries" data-bind="visible: !browserLoading()">
+                            <!-- ko foreach: browserDirs -->
+                            <li class="rs-entry"><a href="#" data-bind="click: function () { $parent.browse($parent.joinPath(name)); }"><i class="fas fa-folder"></i> <span data-bind="text: name"></span></a></li>
+                            <!-- /ko -->
+                            <!-- ko foreach: browserFiles -->
+                            <li class="rs-entry">
+                                <a href="#" data-bind="click: function () { $parent.fetchFile($data); }"><i class="fas" data-bind="css: /\.sldprt$/i.test(name) ? 'fa-cube' : 'fa-file'"></i> <span data-bind="text: name"></span></a>
+                                <span class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></span>
+                                <span class="muted" data-bind="visible: $parent.fetching()[$parent.joinPath(name)]">fetching…</span>
+                            </li>
+                            <!-- /ko -->
+                            <li class="muted" data-bind="visible: !browserDirs().length && !browserFiles().length && !browserError()">No STL or SolidWorks files here.</li>
+                            <li class="muted" data-bind="visible: browserTruncated">Only the first 2000 entries are shown.</li>
+                        </ul>
+                    </div>
+
+                    <div class="rs-table-wrap">
+                        <table class="table table-condensed rs-table rs-model-table" data-bind="visible: models().length">
+                            <tbody data-bind="foreach: models">
+                                <tr>
+                                    <td class="rs-name"><a href="#" title="Preview" data-bind="text: name, click: $parent.previewModel"></a>
+                                        <span class="label rs-src" data-bind="text: source, visible: source !== 'upload'"></span></td>
+                                    <td class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></td>
+                                    <td class="rs-actions">
+                                        <button class="btn btn-mini btn-primary" data-bind="click: $parent.addToPlate"><i class="fas fa-plus"></i> Add</button>
+                                        <button class="btn btn-mini" title="Delete" data-bind="click: $parent.deleteModel, enable: $parent.canDelete"><i class="far fa-trash-alt"></i></button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <p class="muted" data-bind="visible: !models().length">No models yet. Upload an STL or SolidWorks part, or pick one from your PC's Dropbox.</p>
+                    </div>
+                </div>
+                <div class="rs-section rs-preview" data-bind="visible: previewMode() !== 'collapsed'">
+                    <h4>Preview
+                        <span class="muted rs-meta rs-preview-name" data-bind="text: previewTitle"></span>
+                        <span class="pull-right rs-preview-modes">
+                            <button class="btn btn-mini" data-bind="attr: {title: previewMode() === 'full' ? 'Make it smaller, next to the models' : 'Use the full width'}, click: function () { setPreviewMode(previewMode() === 'full' ? 'compact' : 'full'); }"><i class="fas" data-bind="css: previewMode() === 'full' ? 'fa-compress-alt' : 'fa-expand-alt'"></i></button>
+                            <button class="btn btn-mini" title="Hide the preview" data-bind="click: function () { setPreviewMode('collapsed'); }"><i class="fas fa-times"></i></button>
+                        </span>
+                    </h4>
                     <div class="rs-preview-wrap">
                         <canvas id="remoteslicing_preview" title="Drag to turn it around, double-click to reset"></canvas>
-                        <div class="rs-preview-hint muted" data-bind="visible: !previewTarget()">Select a model on the plate, or click a model's name in the library.</div>
+                        <div class="rs-preview-hint muted" data-bind="visible: !previewTarget()">Select a model on the plate, or click a model's name in the list.</div>
                         <div class="rs-preview-hint muted" data-bind="visible: previewTarget() && previewBusy()">Loading…</div>
                     </div>
                     <div class="rs-preview-bar">
@@ -81,60 +139,6 @@
                         </div>
                         <span class="muted rs-meta" data-bind="text: previewSize"></span>
                     </div>
-                </div>
-            </div>
-
-            <div class="rs-section">
-                <h4>Models</h4>
-                <div class="rs-upload">
-                    <input type="file" id="remoteslicing_file" accept=".stl,.sldprt" multiple data-bind="event: {change: uploadSelected}, enable: canUpload">
-                    <button class="btn btn-small" data-bind="click: toggleBrowser, enable: canUpload"><i class="fab fa-dropbox"></i> From PC Dropbox</button>
-                </div>
-                <div class="progress progress-striped active rs-progress" data-bind="visible: uploadProgress() !== null">
-                    <div class="bar" data-bind="style: {width: (uploadProgress() || 0) + '%'}"></div>
-                </div>
-
-                <div class="rs-browser" data-bind="visible: browserVisible">
-                    <label class="checkbox rs-remember muted"><input type="checkbox" data-bind="checked: rememberFolder"> Remember folder</label>
-                    <div class="rs-crumbs">
-                        <a href="#" data-bind="click: function () { browse(''); }">Dropbox</a>
-                        <!-- ko foreach: crumbs -->
-                        / <a href="#" data-bind="text: name, click: function () { $parent.browse(path); }"></a>
-                        <!-- /ko -->
-                    </div>
-                    <div class="muted" data-bind="visible: browserLoading">Asking the PC…</div>
-                    <div class="rs-bad" data-bind="visible: browserError, text: browserError"></div>
-                    <ul class="rs-entries" data-bind="visible: !browserLoading()">
-                        <!-- ko foreach: browserDirs -->
-                        <li class="rs-entry"><a href="#" data-bind="click: function () { $parent.browse($parent.joinPath(name)); }"><i class="fas fa-folder"></i> <span data-bind="text: name"></span></a></li>
-                        <!-- /ko -->
-                        <!-- ko foreach: browserFiles -->
-                        <li class="rs-entry">
-                            <a href="#" data-bind="click: function () { $parent.fetchFile($data); }"><i class="fas" data-bind="css: /\.sldprt$/i.test(name) ? 'fa-cube' : 'fa-file'"></i> <span data-bind="text: name"></span></a>
-                            <span class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></span>
-                            <span class="muted" data-bind="visible: $parent.fetching()[$parent.joinPath(name)]">fetching…</span>
-                        </li>
-                        <!-- /ko -->
-                        <li class="muted" data-bind="visible: !browserDirs().length && !browserFiles().length && !browserError()">No STL or SolidWorks files here.</li>
-                        <li class="muted" data-bind="visible: browserTruncated">Only the first 2000 entries are shown.</li>
-                    </ul>
-                </div>
-
-                <div class="rs-table-wrap">
-                    <table class="table table-condensed rs-table rs-model-table" data-bind="visible: models().length">
-                        <tbody data-bind="foreach: models">
-                            <tr>
-                                <td class="rs-name"><a href="#" title="Preview" data-bind="text: name, click: $parent.previewModel"></a>
-                                    <span class="label rs-src" data-bind="text: source, visible: source !== 'upload'"></span></td>
-                                <td class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></td>
-                                <td class="rs-actions">
-                                    <button class="btn btn-mini btn-primary" data-bind="click: $parent.addToPlate"><i class="fas fa-plus"></i> Add</button>
-                                    <button class="btn btn-mini" title="Delete" data-bind="click: $parent.deleteModel, enable: $parent.canDelete"><i class="far fa-trash-alt"></i></button>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                    <p class="muted" data-bind="visible: !models().length">No models yet. Upload an STL or SolidWorks part, or pick one from your PC's Dropbox.</p>
                 </div>
             </div>
 
