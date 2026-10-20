@@ -54,6 +54,8 @@
 .remoteslicing table.rs-table td { vertical-align: middle; }
 .remoteslicing .rs-name { word-break: break-word; }
 .remoteslicing .rs-actions { white-space: nowrap; text-align: right; }
+.remoteslicing .rs-tilt { white-space: nowrap; }
+.remoteslicing .rs-tilt .rs-meta { display: block; }
 .remoteslicing .rs-plate-table tr { cursor: pointer; }
 .remoteslicing .rs-plate-table tr.rs-selected td { background: rgba(88, 166, 255, 0.12); }
 .remoteslicing .rs-num { width: 56px; margin: 0; padding: 2px 4px; }

@@ -175,10 +175,10 @@ $(function () {
         self.plateName = ko.observable("plate");
         self.items = ko.observableArray([]);
         self.selectedUid = ko.observable(null);
-        self.hulls = {};  // model id -> jQuery promise of a hull
+        self.meshes = {};  // model id -> jQuery promise of the parsed STL (footprints are computed per tilt)
         self.lastExtruder = 0;
 
-        function Item(model, x, y, rotation, extruder) {
+        function Item(model, x, y, rotation, extruder, tiltX, tiltY) {
             var it = this;
             it.uid = "i" + (++uidCounter);
             it.modelId = model.id;
@@ -187,33 +187,60 @@ $(function () {
             it.y = ko.observable(y);
             it.rotation = ko.observable(rotation || 0);
             it.extruder = ko.observable(extruder || 0);
+            it.tiltX = ko.observable(tiltX || 0);  // 90-degree steps about X, then Y: which face is down
+            it.tiltY = ko.observable(tiltY || 0);
+            it.tiltText = ko.pureComputed(function () {
+                return (it.tiltX() || it.tiltY()) ? "X" + it.tiltX() + "° Y" + it.tiltY() + "°" : "flat";
+            });
+            it.mesh = null;
             it.hull = ko.observable(null);
             it.loading = ko.observable(true);
             it.error = ko.observable("");
             it.extruder.subscribe(function (v) { self.lastExtruder = v; });
         }
 
-        self.loadHull = function (modelId) {
-            if (!self.hulls[modelId]) {
+        self.loadMesh = function (modelId) {
+            if (!self.meshes[modelId]) {
                 var d = $.Deferred();
                 fetch(base + "models/" + modelId + "/stl", {credentials: "same-origin"})
                     .then(function (r) { if (!r.ok) { throw new Error("download failed (" + r.status + ")"); } return r.arrayBuffer(); })
                     .then(function (buf) {
                         var parsed = BED.parseStl(buf);
-                        d.resolve(BED.convexHull(parsed.points, parsed.count));
+                        parsed.hulls = {};  // "tiltX,tiltY" -> footprint
+                        d.resolve(parsed);
                     })
-                    .catch(function (e) { delete self.hulls[modelId]; d.reject(e.message || String(e)); });
-                self.hulls[modelId] = d.promise();
+                    .catch(function (e) { delete self.meshes[modelId]; d.reject(e.message || String(e)); });
+                self.meshes[modelId] = d.promise();
             }
-            return self.hulls[modelId];
+            return self.meshes[modelId];
         };
 
-        self.makeItem = function (model, x, y, rotation, extruder) {
-            var item = new Item(model, x, y, rotation, extruder);
-            self.loadHull(model.id)
-                .done(function (hull) { item.hull(hull); item.loading(false); })
+        // Footprint of the model as it lies on the bed: the convex hull of its X/Y after the tilt.
+        function hullFor(mesh, tiltX, tiltY) {
+            var key = tiltX + "," + tiltY;
+            if (!mesh.hulls[key]) {
+                var points = (tiltX || tiltY) ? BED.tiltPoints(mesh.xyz, mesh.count, tiltX, tiltY) : mesh.points;
+                mesh.hulls[key] = BED.convexHull(points, mesh.count);
+            }
+            return mesh.hulls[key];
+        }
+
+        self.makeItem = function (model, x, y, rotation, extruder, tiltX, tiltY) {
+            var item = new Item(model, x, y, rotation, extruder, tiltX, tiltY);
+            var refresh = function () {
+                if (item.mesh) { item.hull(hullFor(item.mesh, Number(item.tiltX()), Number(item.tiltY()))); }
+            };
+            item.tiltX.subscribe(refresh);
+            item.tiltY.subscribe(refresh);
+            self.loadMesh(model.id)
+                .done(function (mesh) { item.mesh = mesh; refresh(); item.loading(false); })
                 .fail(function (msg) { item.error(msg); item.loading(false); });
             return item;
+        };
+        self.tilt = function (axis, item) {
+            var obs = axis === "x" ? item.tiltX : item.tiltY;
+            obs((Number(obs()) + 90) % 360);
+            self.selectItem(item.uid);
         };
 
         self.addToPlate = function (model) {
@@ -225,7 +252,8 @@ $(function () {
         };
         self.duplicateItem = function (item) {
             var model = {id: item.modelId, name: item.name};
-            var copy = self.makeItem(model, Number(item.x()) + 20, Number(item.y()), Number(item.rotation()), item.extruder());
+            var copy = self.makeItem(model, Number(item.x()) + 20, Number(item.y()), Number(item.rotation()), item.extruder(),
+                                     Number(item.tiltX()), Number(item.tiltY()));
             self.items.push(copy);
             self.selectItem(copy.uid);
         };
@@ -277,7 +305,8 @@ $(function () {
         self.slice = function (startPrint) {
             var items = _.map(self.items(), function (it) {
                 return {model_id: it.modelId, x: Number(it.x()), y: Number(it.y()),
-                        rotation: Number(it.rotation()), extruder: Number(it.extruder())};
+                        rotation: Number(it.rotation()), extruder: Number(it.extruder()),
+                        tilt_x: Number(it.tiltX()), tilt_y: Number(it.tiltY())};
             });
             var send = function () {
                 OctoPrint.postJson(base + "slice", {name: self.plateName(), items: items, start_print: startPrint})
@@ -416,7 +445,8 @@ $(function () {
                     name: self.plateName(),
                     items: _.map(self.items(), function (it) {
                         return {modelId: it.modelId, name: it.name, x: Number(it.x()), y: Number(it.y()),
-                                rotation: Number(it.rotation()), extruder: Number(it.extruder())};
+                                rotation: Number(it.rotation()), extruder: Number(it.extruder()),
+                                tiltX: Number(it.tiltX()), tiltY: Number(it.tiltY())};
                     })
                 }));
             } catch (e) { /* private mode or blocked storage: the plate just isn't remembered */ }
@@ -427,7 +457,7 @@ $(function () {
             if (!saved) { return; }
             self.plateName(saved.name || "plate");
             self.items(_.map(saved.items || [], function (s) {
-                return self.makeItem({id: s.modelId, name: s.name}, s.x, s.y, s.rotation, s.extruder);
+                return self.makeItem({id: s.modelId, name: s.name}, s.x, s.y, s.rotation, s.extruder, s.tiltX || 0, s.tiltY || 0);
             }));
         };
         // Restore before the autosave below exists: a computed evaluates once on creation and would
@@ -435,7 +465,7 @@ $(function () {
         self.restorePlate();
         ko.computed(function () {
             self.plateName();
-            _.each(self.items(), function (it) { it.x(); it.y(); it.rotation(); it.extruder(); });
+            _.each(self.items(), function (it) { it.x(); it.y(); it.rotation(); it.extruder(); it.tiltX(); it.tiltY(); });
             self.savePlate();
         }).extend({rateLimit: 300});
 

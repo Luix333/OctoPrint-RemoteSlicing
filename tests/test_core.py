@@ -109,6 +109,17 @@ class CoreTests(unittest.TestCase):
             self.core.submit_slice("plate", [{"model_id": m["id"], "x": "abc",
                                               "y": 0, "rotation": 0, "extruder": 0}], False)
 
+    def test_submit_slice_tilt(self):
+        m = self.core.add_model("cube", 10, "upload")
+        base = {"model_id": m["id"], "x": 0, "y": 0, "rotation": 0, "extruder": 0}
+        task = self.core.submit_slice("plate", [dict(base, tilt_x=90, tilt_y=-90), dict(base)], False)
+        items = task["payload"]["items"]
+        self.assertEqual((items[0]["tilt_x"], items[0]["tilt_y"]), (90.0, 270.0))  # normalised to 0..359
+        self.assertEqual((items[1]["tilt_x"], items[1]["tilt_y"]), (0.0, 0.0))     # missing = flat
+        for bad in ({"tilt_x": 45}, {"tilt_y": "up"}):
+            with self.assertRaises(ValueError):
+                self.core.submit_slice("plate", [dict(base, **bad)], False)
+
     def test_submit_slice_bad_extruder_negative(self):
         m = self.core.add_model("cube", 10, "upload")
         with self.assertRaises(ValueError):

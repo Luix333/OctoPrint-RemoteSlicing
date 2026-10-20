@@ -220,7 +220,8 @@ class Core(object):
         name : str
             Plate name (stripped; empty becomes ``"plate"``).
         items : list
-            List of dicts with keys ``model_id``, ``x``, ``y``, ``rotation``, ``extruder``.
+            List of dicts with keys ``model_id``, ``x``, ``y``, ``rotation``, ``extruder`` and optional
+            ``tilt_x``/``tilt_y`` (multiples of 90 degrees, about X then Y, applied before ``rotation``).
         start_print : bool
             Whether to auto-start the print after slicing completes.
 
@@ -274,6 +275,17 @@ class Core(object):
                 except (TypeError, ValueError, KeyError):
                     raise ValueError("rotation must be a number")
 
+                # optional tilt onto another face: 90-degree steps about X, then Y
+                tilt = {}
+                for key in ("tilt_x", "tilt_y"):
+                    try:
+                        value = float(item.get(key, 0) or 0)
+                    except (TypeError, ValueError):
+                        raise ValueError("{} must be a number".format(key))
+                    if value % 90:
+                        raise ValueError("{} must be a multiple of 90".format(key))
+                    tilt[key] = value % 360
+
                 # extruder must be int >= 0
                 try:
                     extruder = int(item["extruder"])
@@ -293,6 +305,8 @@ class Core(object):
                     "x": x,
                     "y": y,
                     "rotation": rotation,
+                    "tilt_x": tilt["tilt_x"],
+                    "tilt_y": tilt["tilt_y"],
                     "extruder": extruder,
                 })
 

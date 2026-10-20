@@ -131,6 +131,27 @@ class TestPlace(unittest.TestCase):
         self.assertGreater(marker[1], 3.0)          # now far along +Y
         self.assertAlmostEqual(marker[0], placed[0, 0, 0], places=6)  # and level in X with the old origin
 
+    def test_tilt_x_and_y_lay_the_box_on_other_faces(self):
+        """10 x 20 x 5 box: +90 about X stands it on its 10 x 5 face, +90 about Y on its 5 x 20 face."""
+        for tx, ty, size in ((90, 0, (10, 5, 20)), (0, 90, (5, 20, 10)), (90, 90, (20, 5, 10)),
+                             (180, 0, (10, 20, 5)), (270, 270, (20, 5, 10))):
+            fp = footprint(place(self.box, 50, 60, 0, 350, 350, True, tilt_x=tx, tilt_y=ty))
+            got = (fp["max_x"] - fp["min_x"], fp["max_y"] - fp["min_y"], fp["max_z"] - fp["min_z"])
+            for g, want in zip(got, size):
+                self.assertAlmostEqual(g, want, places=6, msg="tilt %s/%s" % (tx, ty))
+            self.assertAlmostEqual(fp["min_z"], 0.0, places=6)
+            self.assertAlmostEqual((fp["min_x"] + fp["max_x"]) / 2, 50.0, places=6)
+            self.assertAlmostEqual((fp["min_y"] + fp["max_y"]) / 2, 60.0, places=6)
+
+    def test_tilt_direction_is_right_handed(self):
+        """+90 about X turns +Y into +Z; +90 about Y turns +Z into +X."""
+        marker = np.array([[[0, 0, 0], [0, 10, 0], [0, 0, 1]]], dtype=np.float64)  # tip at +Y
+        tipped = place(marker, 0, 0, 0, 0, 0, True, tilt_x=90)
+        self.assertAlmostEqual(tipped[0, 1, 2] - tipped[0, 0, 2], 10.0, places=6)   # tip now 10 above origin
+        up = np.array([[[0, 0, 0], [0, 0, 10], [1, 0, 0]]], dtype=np.float64)       # tip at +Z
+        turned = place(up, 0, 0, 0, 0, 0, True, tilt_y=90)
+        self.assertAlmostEqual(turned[0, 1, 0] - turned[0, 0, 0], 10.0, places=6)   # tip now along +X
+
     def test_center_is_zero_true(self):
         """center_is_zero=True leaves centre at (50, 60)."""
         placed = place(self.box, 50, 60, 0, 350, 350, center_is_zero=True)

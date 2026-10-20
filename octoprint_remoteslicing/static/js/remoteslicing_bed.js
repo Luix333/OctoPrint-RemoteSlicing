@@ -36,6 +36,7 @@
         var minZ = Infinity;
         var maxZ = -Infinity;
         var verts = [];
+        var xyz = [];
 
         for (var i = 0; i < numTrianglesFromBuf(buf); i++) {
             var offset = 84 + i * 50;
@@ -44,6 +45,7 @@
                 var vy = dv.getFloat32(offset + 12 + v * 12 + 4, true);
                 var vz = dv.getFloat32(offset + 12 + v * 12 + 8, true);
                 verts.push(vx, vy);
+            xyz.push(vx, vy, vz);
                 count++;
                 if (vz < minZ) minZ = vz;
                 if (vz > maxZ) maxZ = vz;
@@ -52,6 +54,7 @@
 
         if (count === 0) throw new Error("not an STL file");
         result.points = new Float64Array(verts);
+        result.xyz = new Float32Array(xyz);
         result.count = count;
         result.minZ = minZ;
         result.maxZ = maxZ;
@@ -69,6 +72,7 @@
         var minZ = Infinity;
         var maxZ = -Infinity;
         var verts = [];
+        var xyz = [];
         var m;
 
         while ((m = re.exec(text)) !== null) {
@@ -76,6 +80,7 @@
             var vy = parseFloat(m[2]);
             var vz = parseFloat(m[3]);
             verts.push(vx, vy);
+            xyz.push(vx, vy, vz);
             count++;
             if (vz < minZ) minZ = vz;
             if (vz > maxZ) maxZ = vz;
@@ -83,11 +88,34 @@
 
         if (count === 0) throw new Error("not an STL file");
         result.points = new Float64Array(verts);
+        result.xyz = new Float32Array(xyz);
         result.count = count;
         result.minZ = minZ;
         result.maxZ = maxZ;
         return result;
     }
+
+    /* ------------------------------------------------------------------ */
+    /*  Tilt: lay the model on another face                                */
+    /* ------------------------------------------------------------------ */
+
+    /*
+     * X/Y of every vertex after rotating the model tiltX degrees about X and then tiltY degrees about Y
+     * (right-handed), the same transform the PC agent applies before the Z rotation. Returns an
+     * interleaved [x0, y0, x1, y1, ...] Float64Array ready for convexHull().
+     */
+    api.tiltPoints = function (xyz, count, tiltX, tiltY) {
+        var ax = (tiltX || 0) * Math.PI / 180, ay = (tiltY || 0) * Math.PI / 180;
+        var cx = Math.cos(ax), sx = Math.sin(ax), cy = Math.cos(ay), sy = Math.sin(ay);
+        var out = new Float64Array(count * 2);
+        for (var i = 0; i < count; i++) {
+            var x = xyz[i * 3], y = xyz[i * 3 + 1], z = xyz[i * 3 + 2];
+            var y1 = y * cx - z * sx, z1 = y * sx + z * cx;   // about X
+            out[i * 2] = x * cy + z1 * sy;                      // about Y
+            out[i * 2 + 1] = y1;
+        }
+        return out;
+    };
 
     /* ------------------------------------------------------------------ */
     /*  Convex hull (Andrew's monotone chain)                              */

@@ -305,3 +305,25 @@ test("problems(): reports outside item and overlapping pair", function () {
     }
     assert.ok(foundOverlap, "a and b should overlap");
 });
+
+// Tilt must match the PC agent's mesh.place (agent/tests/test_mesh.py uses the same box and numbers).
+test("tiltPoints lays the 10x20x5 box on its other faces like the agent does", function () {
+    var parsed = api.parseStl(buildBinaryStlBox());
+    assert.ok(parsed.xyz && parsed.xyz.length === parsed.count * 3);
+    var cases = [[0, 0, 10, 20], [90, 0, 10, 5], [0, 90, 5, 20], [90, 90, 20, 5], [180, 0, 10, 20], [270, 270, 20, 5]];
+    cases.forEach(function (c) {
+        var pts = api.tiltPoints(parsed.xyz, parsed.count, c[0], c[1]);
+        var b = api.bbox(api.place(api.convexHull(pts, parsed.count), 50, 60, 0));
+        assert.ok(Math.abs((b.maxX - b.minX) - c[2]) < 0.06, "width for tilt " + c[0] + "/" + c[1]);
+        assert.ok(Math.abs((b.maxY - b.minY) - c[3]) < 0.06, "depth for tilt " + c[0] + "/" + c[1]);
+        assert.ok(Math.abs((b.minX + b.maxX) / 2 - 50) < 1e-6 && Math.abs((b.minY + b.maxY) / 2 - 60) < 1e-6);
+    });
+});
+
+test("tiltPoints is right-handed: +90 about Y turns +Z into +X", function () {
+    var xyz = new Float32Array([0, 0, 0, 0, 0, 10]);
+    var pts = api.tiltPoints(xyz, 2, 0, 90);
+    assert.ok(Math.abs(pts[2] - 10) < 1e-6 && Math.abs(pts[3]) < 1e-6);
+    pts = api.tiltPoints(new Float32Array([0, 0, 0, 0, 0, 10]), 2, 90, 0);  // +Z goes to -Y about X
+    assert.ok(Math.abs(pts[3] + 10) < 1e-6);
+});

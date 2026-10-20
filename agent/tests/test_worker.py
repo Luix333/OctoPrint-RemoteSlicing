@@ -133,6 +133,20 @@ class WorkerTests(unittest.TestCase):
         progress = [c[1] for c in client.named("progress")]
         self.assertEqual(progress, sorted(progress))
 
+    def test_tilt_is_passed_to_placement(self):
+        task = self.slice_task()
+        task["payload"]["items"][0].update({"tilt_x": 90, "tilt_y": 270})  # second item has no tilt keys
+        calls = []
+        real_place = mesh.place
+
+        def spy(*args, **kwargs):
+            calls.append((kwargs.get("tilt_x"), kwargs.get("tilt_y")))
+            return real_place(*args, **kwargs)
+
+        with mock.patch.object(engine, "run", self.fake_run), mock.patch.object(mesh, "place", spy):
+            self.assertEqual(self.run_task(task, FakeClient()), 0)
+        self.assertEqual(calls, [(90.0, 270.0), (0.0, 0.0)])
+
     def test_disabled_and_missing_extruders(self):
         for extruders, message in (((1,), "T1 is disabled in Cura"), ((5,), "T5 does not exist in Cura")):
             client = FakeClient()

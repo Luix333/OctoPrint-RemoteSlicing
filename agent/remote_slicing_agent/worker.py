@@ -111,7 +111,8 @@ def run_slice(task, cfg, client, reporter, folder):
     meshes = []
     for i, item in enumerate(items):
         placed = mesh.place(mesh.load_stl(sources[item["model_id"]]), float(item["x"]), float(item["y"]),
-                            float(item["rotation"]), bed["width"], bed["depth"], bed["center_is_zero"])
+                            float(item["rotation"]), bed["width"], bed["depth"], bed["center_is_zero"],
+                            tilt_x=float(item.get("tilt_x", 0)), tilt_y=float(item.get("tilt_y", 0)))
         path = os.path.join(folder, "m%d.stl" % i)
         mesh.write_binary_stl(path, placed)
         meshes.append((path, int(item["extruder"])))

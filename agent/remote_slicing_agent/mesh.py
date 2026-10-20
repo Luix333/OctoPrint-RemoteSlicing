@@ -64,9 +64,24 @@ def _read_ascii(data):
     return tris
 
 
-def place(tris, x, y, rotation_deg, bed_width, bed_depth, center_is_zero):
-    """Place a mesh on the bed: rotate, translate to (x,y), lift to z=0, optional centre offset."""
+def _axis_rotation(axis, deg):
+    """Right-handed rotation matrix about the X (0) or Y (1) axis."""
+    rad = np.deg2rad(deg)
+    c, s = np.cos(rad), np.sin(rad)
+    if axis == 0:
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float64)
+    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float64)
+
+
+def place(tris, x, y, rotation_deg, bed_width, bed_depth, center_is_zero, tilt_x=0.0, tilt_y=0.0):
+    """Place a mesh on the bed: tilt (about X, then Y), rotate about Z, translate to (x,y), lift to z=0,
+    optional centre offset. The browser's bed widget applies the same transforms in the same order."""
     result = tris.copy()
+
+    # 0. Tilt onto another face: about X first, then about Y (right-handed, degrees)
+    if tilt_x % 360 or tilt_y % 360:
+        tilt = _axis_rotation(1, tilt_y) @ _axis_rotation(0, tilt_x)
+        result = result @ tilt.T
 
     # 1. Rotate about Z axis (counter-clockwise from above)
     if rotation_deg != 0:

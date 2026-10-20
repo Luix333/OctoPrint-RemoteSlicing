@@ -24,7 +24,7 @@
 
             <div class="rs-table-wrap" data-bind="visible: items().length">
                 <table class="table table-condensed rs-table rs-plate-table">
-                    <thead><tr><th>Model</th><th>Extruder</th><th>X</th><th>Y</th><th>Rot.</th><th></th></tr></thead>
+                    <thead><tr><th>Model</th><th>Extruder</th><th>X</th><th>Y</th><th>Rot.</th><th>Tilt</th><th></th></tr></thead>
                     <tbody data-bind="foreach: items">
                         <tr data-bind="css: {'rs-selected': $parent.selectedUid() === uid}, click: function () { $parent.selectItem(uid); return true; }">
                             <td class="rs-name">
@@ -39,6 +39,11 @@
                             <td><input type="number" step="1" class="rs-num" data-bind="value: x"></td>
                             <td><input type="number" step="1" class="rs-num" data-bind="value: y"></td>
                             <td><input type="number" step="5" class="rs-num" data-bind="value: rotation"></td>
+                            <td class="rs-tilt">
+                                <button class="btn btn-mini" title="Tip 90° about X (front-to-back)" data-bind="click: function () { $parent.tilt('x', $data); }, clickBubble: false"><i class="fas fa-redo"></i> X</button>
+                                <button class="btn btn-mini" title="Tip 90° about Y (side-to-side)" data-bind="click: function () { $parent.tilt('y', $data); }, clickBubble: false"><i class="fas fa-redo"></i> Y</button>
+                                <span class="muted rs-meta" data-bind="text: tiltText"></span>
+                            </td>
                             <td class="rs-actions">
                                 <button class="btn btn-mini" title="Duplicate" data-bind="click: $parent.duplicateItem"><i class="fas fa-clone"></i></button>
                                 <button class="btn btn-mini" title="Remove from plate" data-bind="click: $parent.removeItem"><i class="fas fa-times"></i></button>
