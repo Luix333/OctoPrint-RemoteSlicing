@@ -21,6 +21,7 @@ import octoprint.util
 from .core import DEFAULT_SETTINGS, Core
 
 STATE_FILE = "state.json"
+PREVIEW_MAX_AGE = 2 * 3600  # seconds a Dropbox preview file is kept if it is never added
 _ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
 
 
@@ -60,6 +61,7 @@ class RemoteSlicingPlugin(
         # Ensure model and source sub-directories exist
         os.makedirs(os.path.dirname(self._model_path("x")), exist_ok=True)
         os.makedirs(os.path.dirname(self._source_path("x", "")), exist_ok=True)
+        os.makedirs(os.path.dirname(self._preview_path("x")), exist_ok=True)
 
     def on_after_startup(self):
         # Periodic tick: expire leases, check pending prints
@@ -133,6 +135,22 @@ class RemoteSlicingPlugin(
         """Return the full path for a model STL file."""
         return os.path.join(self.get_plugin_data_folder(), "models", "{}.stl".format(model_id))
 
+    def _preview_path(self, preview_id):
+        """Temporary STL of a Dropbox file fetched only to look at it."""
+        return os.path.join(self.get_plugin_data_folder(), "previews", "{}.stl".format(preview_id))
+
+    def _clean_previews(self):
+        """Delete preview files nobody added within PREVIEW_MAX_AGE."""
+        folder = os.path.dirname(self._preview_path("x"))
+        cutoff = time.time() - PREVIEW_MAX_AGE
+        try:
+            for name in os.listdir(folder):
+                path = os.path.join(folder, name)
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+        except OSError:
+            self._logger.exception("Could not clean old previews")
+
     def _source_path(self, source_id, ext):
         """Return the full path for a source file."""
         return os.path.join(self.get_plugin_data_folder(), "sources", "{}{}".format(source_id, ext))
@@ -148,6 +166,7 @@ class RemoteSlicingPlugin(
         if self._core is None:
             return
         self._core.expire()
+        self._clean_previews()
         self._check_pending_print()
 
     # ------------------------------------------------------- starting prints
@@ -351,6 +370,54 @@ class RemoteSlicingPlugin(
             return flask.jsonify({"error": str(exc)}), 409
         return flask.jsonify({"task": task})
 
+    @octoprint.plugin.BlueprintPlugin.route("/preview", methods=["POST"])
+    def preview_handler(self):
+        """Ask the PC agent for a Dropbox file just to show it in the preview."""
+        if not _can("FILES_UPLOAD"):
+            flask.abort(403)
+        if not self._core.agent_status()["online"]:
+            return flask.jsonify({"error": "the PC agent is offline"}), 409
+        data = flask.request.get_json(force=True, silent=True) or {}
+        try:
+            task = self._core.submit_preview(data.get("path", ""))
+        except ValueError as exc:
+            return flask.jsonify({"error": str(exc)}), 409
+        return flask.jsonify({"task": task})
+
+    @octoprint.plugin.BlueprintPlugin.route("/previews/<preview_id>/stl", methods=["GET"])
+    def preview_download(self, preview_id):
+        """The previewed Dropbox file, for the browser to render."""
+        if not _can("FILES_DOWNLOAD"):
+            flask.abort(403)
+        if not self._valid_id(preview_id):
+            flask.abort(404)
+        path = self._preview_path(preview_id)
+        if not os.path.exists(path):
+            flask.abort(404)
+        return flask.send_file(path, mimetype="model/stl")
+
+    @octoprint.plugin.BlueprintPlugin.route("/previews/<preview_id>/add", methods=["POST"])
+    def preview_add(self, preview_id):
+        """Keep a previewed file: it becomes a model in the library without fetching it again."""
+        if not _can("FILES_UPLOAD"):
+            flask.abort(403)
+        if not self._valid_id(preview_id):
+            flask.abort(404)
+        task = next((t for t in self._core.tasks() if t["id"] == preview_id), None)
+        path = self._preview_path(preview_id)
+        if task is None or task["kind"] != "preview" or task["state"] != "done" or not os.path.exists(path):
+            return flask.jsonify({"error": "the preview is gone, fetch the file again"}), 404
+        result = task.get("result") or {}
+        model = self._core.add_model(result.get("name") or "model", os.path.getsize(path), "dropbox",
+                                     origin=task["payload"].get("path", ""))
+        try:
+            shutil.move(path, self._model_path(model["id"]))
+        except Exception:
+            self._core.remove_model(model["id"])
+            self._logger.exception("Could not keep preview %s", preview_id)
+            return flask.jsonify({"error": "could not save model"}), 500
+        return flask.jsonify({"model": model})
+
     @octoprint.plugin.BlueprintPlugin.route("/fetch", methods=["POST"])
     def fetch_handler(self):
         """Submit a fetch task."""
@@ -501,7 +568,7 @@ class RemoteSlicingPlugin(
             if t["id"] == task_id:
                 target = t
                 break
-        if target is None or target["state"] != "running" or target["kind"] not in ("fetch", "convert"):
+        if target is None or target["state"] != "running" or target["kind"] not in ("fetch", "convert", "preview"):
             flask.abort(409)
 
         # Read OctoPrint's temp-file metadata
@@ -514,6 +581,15 @@ class RemoteSlicingPlugin(
             return flask.jsonify({"error": "no file received"}), 400
 
         file_size = os.path.getsize(temp_path)
+
+        if target["kind"] == "preview":
+            try:
+                shutil.move(temp_path, self._preview_path(task_id))
+            except Exception:
+                self._logger.exception("Could not save preview file from agent")
+                return flask.jsonify({"error": "could not save preview"}), 500
+            self._core.complete(task_id, {"preview_id": task_id, "name": model_name, "size": file_size})
+            return flask.jsonify({"preview": task_id})
 
         # Determine source and origin
         if target["kind"] == "fetch":

@@ -30,12 +30,10 @@
 .remoteslicing .rs-status-settings { flex: 1 1 260px; text-align: right; color: var(--rs-muted); }
 
 /* layout: two columns, stacked when the tab is narrow (class set from a ResizeObserver) */
-.remoteslicing .rs-columns { display: flex; gap: 16px; align-items: flex-start; }
-.remoteslicing .rs-main { flex: 1 1 58%; min-width: 0; }
-.remoteslicing .rs-side { flex: 1 1 42%; min-width: 0; }
-.remoteslicing.rs-narrow .rs-columns { flex-direction: column; }
-.remoteslicing.rs-narrow .rs-main,
-.remoteslicing.rs-narrow .rs-side { flex-basis: auto; width: 100%; }
+/* the plate always spans the whole tab (at any browser zoom); list, preview and jobs follow below */
+.remoteslicing .rs-columns { display: flex; flex-direction: column; gap: 16px; }
+.remoteslicing .rs-main,
+.remoteslicing .rs-side { width: 100%; min-width: 0; }
 
 .remoteslicing .rs-plate-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .remoteslicing .rs-plate-head label { margin: 0; font-weight: bold; }

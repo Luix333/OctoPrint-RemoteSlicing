@@ -171,7 +171,8 @@ def run_convert(task, cfg, client, reporter, folder):
     client.upload_model(task["id"], stl, payload["name"] + ".stl")
 
 
-KINDS = {"slice": run_slice, "fetch": run_fetch, "convert": run_convert}
+# A preview is a fetch whose upload OctoPrint keeps aside instead of adding to the model list.
+KINDS = {"slice": run_slice, "fetch": run_fetch, "preview": run_fetch, "convert": run_convert}
 
 
 def run_task(task, cfg, client):

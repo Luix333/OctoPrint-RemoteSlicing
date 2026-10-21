@@ -89,7 +89,7 @@
                             <li class="rs-entry"><a href="#" data-bind="click: function () { $parent.browse($parent.joinPath(name)); }"><i class="fas fa-folder"></i> <span data-bind="text: name"></span></a></li>
                             <!-- /ko -->
                             <!-- ko foreach: browserFiles -->
-                            <li class="rs-entry rs-file" title="Use Add to bring it into the model list" data-bind="css: {'rs-picked': $parent.pickedFile() === $parent.joinPath(name)}, click: function () { $parent.pickedFile($parent.joinPath(name)); }">
+                            <li class="rs-entry rs-file" title="Click to preview it; Add puts it on the plate" data-bind="css: {'rs-picked': $parent.pickedFile() === $parent.joinPath(name)}, click: function () { $parent.pickFile($data); }">
                                 <span class="rs-file-name"><i class="fas" data-bind="css: /\.sldprt$/i.test(name) ? 'fa-cube' : 'fa-file'"></i> <span data-bind="text: name"></span></span>
                                 <span class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></span>
                                 <span class="muted rs-meta" data-bind="visible: $parent.fetching()[$parent.joinPath(name)]">fetching…</span>
@@ -128,6 +128,7 @@
                     </h4>
                     <div class="rs-preview-wrap">
                         <canvas id="remoteslicing_preview" title="Drag to turn it around, double-click to reset"></canvas>
+                        <div class="rs-preview-hint muted" data-bind="visible: previewWaiting, text: previewWaiting"></div>
                         <div class="rs-preview-hint muted" data-bind="visible: !previewTarget()">Select a model on the plate, or click a model's name in the list.</div>
                         <div class="rs-preview-hint muted" data-bind="visible: previewTarget() && previewBusy()">Loading…</div>
                     </div>

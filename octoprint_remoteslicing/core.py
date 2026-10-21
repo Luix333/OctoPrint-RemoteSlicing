@@ -17,6 +17,8 @@ import copy
 import threading
 import uuid
 
+PREVIEWS_KEPT = 5  # finished preview tasks remembered (their files live in the glue's preview folder)
+
 DEFAULT_SETTINGS = {
     "agent_timeout": 150,
     "lease_seconds": 120,
@@ -346,6 +348,25 @@ class Core(object):
             self._host.wake_agent({"type": "agent.wake"})
             return copy.deepcopy(task)
 
+    def submit_preview(self, path):
+        """Ask the agent for a Dropbox file just to look at it (not added to the model list).
+
+        The agent uploads it to a temporary preview area; the glue can later turn it into a model. A newer
+        preview request replaces any older one that is still waiting, so clicking through files stays cheap.
+        """
+        with self._lock:
+            self._validate_path(path)
+            for t in self._tasks:
+                if t["kind"] == "preview" and t["state"] == "queued":
+                    t["state"] = "cancelled"
+                    t["updated"] = self._host.now()
+            task = self._make_task("preview", {"path": path})
+            self._tasks.append(task)
+            self._trim_finished()
+            self._host.changed()
+            self._host.wake_agent({"type": "agent.wake"})
+            return copy.deepcopy(task)
+
     def submit_convert(self, source_id, name):
         """Submit a SolidWorks-to-STL conversion task.
 
@@ -660,18 +681,23 @@ class Core(object):
         """
         keep = _int(self.settings()["keep_finished"], 50, 0)
         finished = []
+        previews = []
         running = []
         for t in self._tasks:
-            if t["state"] in ("done", "failed", "cancelled"):
-                finished.append(t)
-            else:
+            if t["state"] not in ("done", "failed", "cancelled"):
                 running.append(t)
+            elif t["kind"] == "preview":
+                previews.append(t)  # kept apart, so previews never push real jobs out of the history
+            else:
+                finished.append(t)
 
         if len(finished) > keep:
             finished.sort(key=lambda t: t["created"])
             finished = finished[len(finished) - keep:]
+        previews.sort(key=lambda t: t["created"])
+        previews = previews[-PREVIEWS_KEPT:]
 
-        self._tasks = running + finished
+        self._tasks = running + finished + previews
 
     # ----------------------------------------------------------- tasks
 

@@ -155,7 +155,9 @@ $(function () {
             if (s.server_time) { self.serverOffset = s.server_time - Date.now() / 1000; }
             self.models(s.models || []);
             self.agent(s.agent || {online: false});
-            reconcile(self.tasks, s.tasks || [], function (d) { return new TaskRow(d); });
+            var jobs = _.filter(s.tasks || [], function (t) { return t.kind !== "preview"; });
+            reconcile(self.tasks, jobs, function (d) { return new TaskRow(d); });
+            self.followPreviewTask(s.tasks || []);
             _.each(s.tasks || [], function (t) {
                 if (self.autoAdd[t.id] && t.state !== "queued" && t.state !== "running") {
                     delete self.autoAdd[t.id];
@@ -172,7 +174,9 @@ $(function () {
             // drop plate items whose model is gone, and orientations remembered for deleted models
             var ids = _.pluck(self.models(), "id");
             self.items.remove(function (it) { return !_.contains(ids, it.modelId); });
-            var stale = _.filter(_.keys(self.modelOrient()), function (id) { return !_.contains(ids, id); });
+            var stale = _.filter(_.keys(self.modelOrient()), function (id) {
+                return id.indexOf("dropbox:") !== 0 && !_.contains(ids, id);  // Dropbox paths are kept
+            });
             if (stale.length && ids.length) {
                 var kept = _.omit(self.modelOrient(), stale);
                 self.modelOrient(kept);
@@ -180,6 +184,10 @@ $(function () {
             }
         };
 
+        // The server's state push and an HTTP reply can both bring a new model, in either order.
+        self.knowModel = function (model) {
+            if (!_.some(self.models(), function (m) { return m.id === model.id; })) { self.models.unshift(model); }
+        };
         self.refresh = function () {
             if (!self.loginState.isUser()) { return; }
             OctoPrint.get(base + "state").done(self.applyState);
@@ -237,10 +245,10 @@ $(function () {
             it.extruder.subscribe(function (v) { self.lastExtruder = v; });
         }
 
-        self.loadMesh = function (modelId) {
+        self.loadMesh = function (modelId, url) {
             if (!self.meshes[modelId]) {
                 var d = $.Deferred();
-                fetch(base + "models/" + modelId + "/stl", {credentials: "same-origin"})
+                fetch(url || base + "models/" + modelId + "/stl", {credentials: "same-origin"})
                     .then(function (r) { if (!r.ok) { throw new Error("download failed (" + r.status + ")"); } return r.arrayBuffer(); })
                     .then(function (buf) {
                         var parsed = BED.parseStl(buf);
@@ -399,7 +407,7 @@ $(function () {
                             self.autoAdd[resp.task.id] = true;
                             self.notify(file.name + ": converting in SolidWorks on the PC");
                         } else if (resp && resp.model) {
-                            self.models.unshift(resp.model);
+                            self.knowModel(resp.model);
                         }
                         next();
                     })
@@ -501,21 +509,75 @@ $(function () {
             self.browserFiles(d.files || []);
             self.browserTruncated(!!d.truncated);
         };
+        // A picked Dropbox file is fetched to a temporary preview: {path, name, taskId, state, stage, error, previewId}
+        self.dropboxPreview = ko.observable(null);
+        self.pickFile = function (file) {
+            var path = self.joinPath(file.name);
+            self.pickedFile(path);
+            self.selectItem(null);
+            self.previewSource({kind: "dropbox", path: path});
+            if (!self.previewOpen()) { self.setPreviewMode("compact"); }
+            var dp = self.dropboxPreview();
+            if (dp && dp.path === path && dp.state !== "failed") { return; }  // already there or on its way
+            self.dropboxPreview({path: path, name: file.name.replace(/\.[^.]+$/, ""), state: "loading", stage: "asking the PC"});
+            OctoPrint.postJson(base + "preview", {path: path})
+                .done(function (resp) {
+                    var cur = self.dropboxPreview();
+                    if (cur && cur.path === path) { self.dropboxPreview(_.extend({}, cur, {taskId: resp.task.id})); }
+                })
+                .fail(function (xhr) {
+                    var cur = self.dropboxPreview();
+                    if (cur && cur.path === path) {
+                        self.dropboxPreview(_.extend({}, cur, {state: "failed",
+                            error: (xhr.responseJSON && xhr.responseJSON.error) || "could not ask the PC"}));
+                    }
+                });
+        };
+        self.followPreviewTask = function (tasks) {
+            var dp = self.dropboxPreview();
+            if (!dp || !dp.taskId) { return; }
+            var t = _.find(tasks, function (x) { return x.id === dp.taskId; });
+            if (!t) { return; }
+            var next = _.clone(dp);
+            if (t.state === "done" && t.result) { next.state = "ready"; next.previewId = t.result.preview_id; }
+            else if (t.state === "failed" || t.state === "cancelled") { next.state = "failed"; next.error = t.error || t.state; }
+            else { next.state = "loading"; next.stage = t.state === "queued" ? "waiting for the PC" : (t.stage || "working"); }
+            if (!_.isEqual(next, dp)) { self.dropboxPreview(next); }
+        };
+        // Keep the previewed file as a model (no second transfer or SolidWorks run) and put it on the plate.
+        self.addDropboxPreview = function (dp) {
+            OctoPrint.postJson(base + "previews/" + dp.previewId + "/add", {})
+                .done(function (resp) {
+                    var o = self.orientationOf("dropbox:" + dp.path);
+                    if (o.tiltX || o.tiltY || o.rotation) { setOrientation(resp.model.id, o); }
+                    self.knowModel(resp.model);
+                    self.addToPlate(resp.model);
+                    self.dropboxPreview(null);
+                    self.previewSource({kind: "model", id: resp.model.id});
+                })
+                .fail(function () { self.fetchPath(dp.path); });  // preview expired: fetch it the normal way
+        };
         self.fetchFile = function (file) {
             var path = self.joinPath(file.name);
+            var dp = self.dropboxPreview();
+            if (dp && dp.path === path && dp.state === "ready") { self.addDropboxPreview(dp); return; }
+            self.fetchPath(path);
+        };
+        self.fetchPath = function (path) {
+            var name = path.split("/").pop();
             OctoPrint.postJson(base + "fetch", {path: path})
                 .done(function (resp) {
                     self.autoAdd[resp.task.id] = true;
                     var f = _.clone(self.fetching()); f[path] = true; self.fetching(f);
                 })
-                .fail(self.failure("Could not fetch " + file.name));
+                .fail(self.failure("Could not fetch " + name));
         };
 
         // ------------------------------------------------------------------ preview panel
         // "compact" (beside the model list), "full" (whole width) or "collapsed" (hidden)
         self.previewMode = ko.observable(loadPref(PREVIEW_MODE_KEY, loadPref(PREVIEW_KEY, true) ? "compact" : "collapsed"));
         self.previewOpen = ko.pureComputed(function () { return self.previewMode() !== "collapsed"; });
-        self.previewModelId = ko.observable(null);  // a library model clicked for preview
+        self.previewSource = ko.observable(null);  // last clicked: {kind: "model", id} or {kind: "dropbox", path}
         self.view = {az: -30, el: 30};
         self.setPreviewMode = function (mode) {
             self.previewMode(mode);
@@ -524,7 +586,7 @@ $(function () {
         };
         self.previewModel = function (model) {
             self.selectItem(null);
-            self.previewModelId(model.id);
+            self.previewSource({kind: "model", id: model.id});
             if (!self.previewOpen()) { self.setPreviewMode("compact"); }
         };
         // What to show: the selected plate model as it will be printed, else the library model last clicked.
@@ -535,12 +597,21 @@ $(function () {
                 return {modelId: it.modelId, name: it.name, tiltX: Number(it.tiltX()), tiltY: Number(it.tiltY()),
                         rotation: Number(it.rotation()) || 0, color: self.extruderColor(Number(it.extruder())), item: it};
             }
-            var id = self.previewModelId();
-            var model = id && _.find(self.models(), function (m) { return m.id === id; });
+            var src = self.previewSource();
+            if (src && src.kind === "dropbox") {
+                var dp = self.dropboxPreview();
+                if (!dp || dp.path !== src.path) { return null; }
+                var od = self.orientationOf("dropbox:" + dp.path);
+                return {name: dp.name, pending: dp.state !== "ready", stage: dp.stage, error: dp.error, dropbox: dp,
+                        modelId: dp.previewId ? "preview:" + dp.previewId : null,
+                        url: dp.previewId ? base + "previews/" + dp.previewId + "/stl" : null,
+                        orientKey: "dropbox:" + dp.path, tiltX: od.tiltX, tiltY: od.tiltY, rotation: od.rotation, color: "#a8b4be"};
+            }
+            var model = src && src.kind === "model" && _.find(self.models(), function (m) { return m.id === src.id; });
             if (!model) { return null; }
             var o = self.orientationOf(model.id);
             return {modelId: model.id, name: model.name, tiltX: o.tiltX, tiltY: o.tiltY, rotation: o.rotation,
-                    color: "#a8b4be", model: model};
+                    color: "#a8b4be", model: model, orientKey: model.id};
         }).extend({rateLimit: 30});
         self.previewTitle = ko.pureComputed(function () { var t = self.previewTarget(); return t ? t.name : ""; });
         self.previewSize = ko.observable("");
@@ -555,24 +626,36 @@ $(function () {
                 else { self.tilt(axis, t.item); }
                 return;
             }
-            var o = self.orientationOf(t.modelId);
+            var o = self.orientationOf(t.orientKey);
             if (axis === "x") { o.tiltX = (o.tiltX + 90) % 360; }
             else if (axis === "y") { o.tiltY = (o.tiltY + 90) % 360; }
             else { o.rotation = (o.rotation + 90) % 360; }
-            setOrientation(t.modelId, o);
+            setOrientation(t.orientKey, o);
         };
         self.resetOrientation = function () {
             var t = self.previewTarget();
             if (!t) { return; }
             if (t.item) { t.item.tiltX(0); t.item.tiltY(0); t.item.rotation(0); }
-            else { setOrientation(t.modelId, {tiltX: 0, tiltY: 0, rotation: 0}); }
+            else { setOrientation(t.orientKey, {tiltX: 0, tiltY: 0, rotation: 0}); }
         };
         self.previewOrientText = ko.pureComputed(function () {
             var t = self.previewTarget();
             return t ? "X" + t.tiltX + "° Y" + t.tiltY + "° Z" + Math.round(t.rotation) + "°" : "";
         });
-        self.previewIsLibrary = ko.pureComputed(function () { var t = self.previewTarget(); return !!(t && t.model); });
-        self.addPreviewed = function () { var t = self.previewTarget(); if (t && t.model) { self.addToPlate(t.model); } };
+        self.previewIsLibrary = ko.pureComputed(function () {
+            var t = self.previewTarget();
+            return !!(t && (t.model || (t.dropbox && !t.pending)));
+        });
+        self.previewWaiting = ko.pureComputed(function () {
+            var t = self.previewTarget();
+            if (!t || !t.dropbox || !t.pending) { return ""; }
+            return t.error ? "Could not get it: " + t.error : "Getting it from the PC: " + (t.stage || "…");
+        });
+        self.addPreviewed = function () {
+            var t = self.previewTarget();
+            if (t && t.model) { self.addToPlate(t.model); }
+            else if (t && t.dropbox && !t.pending) { self.addDropboxPreview(t.dropbox); }
+        };
         self.setView = function (az, el) { self.view.az = az; self.view.el = el; self.drawPreview(false); };
 
         self.drawPreview = function (quick) {
@@ -592,10 +675,10 @@ $(function () {
             ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.fillStyle = getComputedStyle(canvas).getPropertyValue("--rs-bed").trim() || "#2b2f33";
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-            if (!target) { self.previewSize(""); return; }
+            if (!target || target.pending) { self.previewSize(""); self.previewBusy(false); return; }
             var token = self.previewToken = (self.previewToken || 0) + 1;
             self.previewBusy(true);
-            self.loadMesh(target.modelId).done(function (mesh) {
+            self.loadMesh(target.modelId, target.url).done(function (mesh) {
                 if (token !== self.previewToken) { return; }  // a newer request superseded this one
                 self.previewBusy(false);
                 var m = BED.mul3(BED.viewMatrix(self.view.az, self.view.el), BED.modelMatrix(target.tiltX, target.tiltY, target.rotation));
@@ -723,16 +806,9 @@ $(function () {
             }
         };
 
-        self.watchWidth = function () {
-            var root = document.getElementById("remoteslicing_tab");
-            if (!root || !window.ResizeObserver) { return; }
-            new ResizeObserver(function () {
-                root.classList.toggle("rs-narrow", root.clientWidth < 760);
-            }).observe(root);
-        };
 
         // ------------------------------------------------------------------ OctoPrint hooks
-        self.onAfterBinding = function () { self.attachBed(); self.attachPreview(); self.watchWidth(); };
+        self.onAfterBinding = function () { self.attachBed(); self.attachPreview(); };
         self.onStartupComplete = self.onUserLoggedIn = function () { self.refresh(); };
         self.onAfterTabChange = function (current) {
             if (current === "#tab_plugin_remoteslicing" && self.bed) {

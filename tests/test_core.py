@@ -7,7 +7,7 @@ import unittest
 # Import core.py directly, without the package __init__ (which needs OctoPrint).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "octoprint_remoteslicing"))
 
-from core import Core  # noqa: E402
+from core import Core, DEFAULT_SETTINGS, PREVIEWS_KEPT  # noqa: E402
 
 
 class FakeHost(object):
@@ -39,6 +39,43 @@ class CoreTests(unittest.TestCase):
     def setUp(self):
         self.host = FakeHost()
         self.core = Core(self.host)
+
+    # --------------------------------------------------------------- previews
+
+    def test_preview_replaces_waiting_preview_and_wakes_agent(self):
+        first = self.core.submit_preview("Print/a.stl")
+        self.host.t += 1
+        second = self.core.submit_preview("Print/b.sldprt")
+        states = {t["id"]: t["state"] for t in self.core.tasks()}
+        self.assertEqual(states[first["id"]], "cancelled")
+        self.assertEqual(states[second["id"]], "queued")
+        self.assertEqual(second["kind"], "preview")
+        self.assertEqual(self.host.wakes[-1], {"type": "agent.wake"})
+        with self.assertRaises(ValueError):
+            self.core.submit_preview("../x.stl")
+
+    def test_running_preview_is_not_replaced(self):
+        first = self.core.submit_preview("a.stl")
+        self.core.claim()
+        self.host.t += 1
+        self.core.submit_preview("b.stl")
+        self.assertEqual(next(t for t in self.core.tasks() if t["id"] == first["id"])["state"], "running")
+
+    def test_finished_previews_are_capped_without_touching_real_jobs(self):
+        self.core.settings = lambda: dict(DEFAULT_SETTINGS, keep_finished=2)
+        for i in range(2):
+            self.core.submit_fetch("f%d.stl" % i)
+            t = self.core.claim()
+            self.core.complete(t["id"], {"model_id": "m"})
+            self.host.t += 1
+        for i in range(8):
+            self.core.submit_preview("p%d.stl" % i)
+            t = self.core.claim()
+            self.core.complete(t["id"], {"preview_id": t["id"]})
+            self.host.t += 1
+        kinds = [t["kind"] for t in self.core.tasks()]
+        self.assertEqual(kinds.count("fetch"), 2)
+        self.assertEqual(kinds.count("preview"), PREVIEWS_KEPT)
 
     # ----------------------------------------------------------------- models
 

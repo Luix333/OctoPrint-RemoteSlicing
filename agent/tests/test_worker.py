@@ -185,6 +185,15 @@ class WorkerTests(unittest.TestCase):
         self.run_task({"id": "t3", "kind": "fetch", "payload": {"path": "../x.stl"}}, client)
         self.assertEqual(client.named("failed")[0][2], "bad path")
 
+    def test_preview_uploads_like_fetch(self):
+        os.makedirs(os.path.join(self.home, "Print"))
+        mesh.write_binary_stl(os.path.join(self.home, "Print", "knight.STL"), _box())
+        client = FakeClient()
+        self.assertEqual(self.run_task({"id": "t9", "kind": "preview", "payload": {"path": "Print/knight.STL"}}, client), 0)
+        upload = client.named("upload_model")[0]
+        self.assertEqual((upload[1], upload[3]), ("t9", "knight.stl"))
+        self.assertEqual(client.named("failed"), [])
+
     def test_unknown_kind(self):
         client = FakeClient()
         self.run_task({"id": "t4", "kind": "nope", "payload": {}}, client)
