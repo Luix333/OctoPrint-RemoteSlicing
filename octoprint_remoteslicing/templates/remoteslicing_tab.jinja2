@@ -139,6 +139,16 @@
                         </div>
                         <span class="muted rs-meta" data-bind="text: previewSize"></span>
                     </div>
+                    <div class="rs-preview-bar rs-orient" data-bind="visible: previewTarget">
+                        <div class="btn-group">
+                            <button class="btn btn-mini" title="Turn 90° about X (tip it forwards)" data-bind="click: function () { orient('x'); }"><i class="fas fa-redo"></i> X</button>
+                            <button class="btn btn-mini" title="Turn 90° about Y (tip it sideways)" data-bind="click: function () { orient('y'); }"><i class="fas fa-redo"></i> Y</button>
+                            <button class="btn btn-mini" title="Turn 90° about Z (rotate on the bed)" data-bind="click: function () { orient('z'); }"><i class="fas fa-redo"></i> Z</button>
+                            <button class="btn btn-mini" title="Back to how the file lies" data-bind="click: resetOrientation"><i class="fas fa-undo"></i></button>
+                        </div>
+                        <span class="muted rs-meta" data-bind="text: previewOrientText"></span>
+                        <button class="btn btn-mini btn-primary" title="Add it to the plate in this orientation" data-bind="visible: previewIsLibrary, click: addPreviewed, enable: canUpload"><i class="fas fa-plus"></i> Add to plate</button>
+                    </div>
                 </div>
             </div>
 

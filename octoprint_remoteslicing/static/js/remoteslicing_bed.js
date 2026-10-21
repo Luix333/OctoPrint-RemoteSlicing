@@ -232,9 +232,9 @@
         return api.renderView(xyz, count, api.modelMatrix(tiltX, tiltY, 0), {maxPx: maxPx, cull: true, heightShade: true});
     };
 
-    /* Size of the model in mm (x, y, z) as it would lie on the bed. */
-    api.modelSize = function (xyz, count, tiltX, tiltY) {
-        var m = api.modelMatrix(tiltX, tiltY, 0);
+    /* Size of the model in mm along the bed's X, Y and Z, as it would lie on the bed (tilt, then rotation). */
+    api.modelSize = function (xyz, count, tiltX, tiltY, rotation) {
+        var m = api.modelMatrix(tiltX, tiltY, rotation || 0);
         var lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
         for (var i = 0; i < count; i++) {
             for (var r = 0; r < 3; r++) {

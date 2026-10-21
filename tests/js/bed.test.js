@@ -418,4 +418,6 @@ test("modelSize follows the tilt", function () {
     assert.deepStrictEqual(api.modelSize(xyz, n, 0, 0).map(Math.round), [10, 20, 5]);
     assert.deepStrictEqual(api.modelSize(xyz, n, 90, 0).map(Math.round), [10, 5, 20]);
     assert.deepStrictEqual(api.modelSize(xyz, n, 0, 90).map(Math.round), [5, 20, 10]);
+    assert.deepStrictEqual(api.modelSize(xyz, n, 0, 0, 90).map(Math.round), [20, 10, 5]);   // rotation turns X/Y
+    assert.deepStrictEqual(api.modelSize(xyz, n, 90, 0, 90).map(Math.round), [5, 10, 20]);
 });

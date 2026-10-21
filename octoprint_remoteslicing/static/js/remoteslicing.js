@@ -10,6 +10,7 @@ $(function () {
     var PREVIEW_MODE_KEY = "remoteslicing.previewMode";
     var REMEMBER_KEY = "remoteslicing.rememberFolder";
     var FOLDER_KEY = "remoteslicing.dropboxFolder";
+    var ORIENT_KEY = "remoteslicing.modelOrientation";  // library model id -> {tiltX, tiltY, rotation}
 
     // Per-browser conveniences; private mode or blocked storage just means nothing is remembered.
     function loadPref(key, fallback) {
@@ -168,9 +169,15 @@ $(function () {
                     }
                 }
             });
-            // drop plate items whose model is gone
+            // drop plate items whose model is gone, and orientations remembered for deleted models
             var ids = _.pluck(self.models(), "id");
             self.items.remove(function (it) { return !_.contains(ids, it.modelId); });
+            var stale = _.filter(_.keys(self.modelOrient()), function (id) { return !_.contains(ids, id); });
+            if (stale.length && ids.length) {
+                var kept = _.omit(self.modelOrient(), stale);
+                self.modelOrient(kept);
+                savePref(ORIENT_KEY, kept);
+            }
         };
 
         self.refresh = function () {
@@ -194,6 +201,19 @@ $(function () {
         self.selectedUid = ko.observable(null);
         self.meshes = {};  // model id -> jQuery promise of the parsed STL (footprints are computed per tilt)
         self.lastExtruder = 0;
+
+        // Orientation chosen in the preview for library models; Add puts the model on the plate that way.
+        self.modelOrient = ko.observable(loadPref(ORIENT_KEY, {}));
+        self.orientationOf = function (modelId) {
+            var o = self.modelOrient()[modelId] || {};
+            return {tiltX: Number(o.tiltX) || 0, tiltY: Number(o.tiltY) || 0, rotation: Number(o.rotation) || 0};
+        };
+        function setOrientation(modelId, o) {
+            var map = _.clone(self.modelOrient());
+            if (!o.tiltX && !o.tiltY && !o.rotation) { delete map[modelId]; } else { map[modelId] = o; }
+            self.modelOrient(map);
+            savePref(ORIENT_KEY, map);
+        }
 
         function Item(model, x, y, rotation, extruder, tiltX, tiltY) {
             var it = this;
@@ -282,7 +302,8 @@ $(function () {
         self.addToPlate = function (model) {
             var size = self.bedSize(), n = self.items().length;
             var x = (size.width / 2 + 20 * n) % size.width;
-            var item = self.makeItem(model, Math.round(x), Math.round(size.depth / 2), 0, self.lastExtruder);
+            var o = self.orientationOf(model.id);
+            var item = self.makeItem(model, Math.round(x), Math.round(size.depth / 2), o.rotation, self.lastExtruder, o.tiltX, o.tiltY);
             self.items.push(item);
             self.selectItem(item.uid);
         };
@@ -511,15 +532,46 @@ $(function () {
             var it = uid && _.find(self.items(), function (i) { return i.uid === uid; });
             if (it) {
                 return {modelId: it.modelId, name: it.name, tiltX: Number(it.tiltX()), tiltY: Number(it.tiltY()),
-                        rotation: Number(it.rotation()) || 0, color: self.extruderColor(Number(it.extruder()))};
+                        rotation: Number(it.rotation()) || 0, color: self.extruderColor(Number(it.extruder())), item: it};
             }
             var id = self.previewModelId();
             var model = id && _.find(self.models(), function (m) { return m.id === id; });
-            return model ? {modelId: model.id, name: model.name, tiltX: 0, tiltY: 0, rotation: 0, color: "#a8b4be"} : null;
+            if (!model) { return null; }
+            var o = self.orientationOf(model.id);
+            return {modelId: model.id, name: model.name, tiltX: o.tiltX, tiltY: o.tiltY, rotation: o.rotation,
+                    color: "#a8b4be", model: model};
         }).extend({rateLimit: 30});
         self.previewTitle = ko.pureComputed(function () { var t = self.previewTarget(); return t ? t.name : ""; });
         self.previewSize = ko.observable("");
         self.previewBusy = ko.observable(false);
+        // Turn the previewed model 90 degrees about X or Y (which face is down) or Z (its rotation on the bed).
+        // A plate model changes in place; a library model remembers it for the next Add.
+        self.orient = function (axis) {
+            var t = self.previewTarget();
+            if (!t) { return; }
+            if (t.item) {
+                if (axis === "z") { t.item.rotation((Number(t.item.rotation()) + 90) % 360); }
+                else { self.tilt(axis, t.item); }
+                return;
+            }
+            var o = self.orientationOf(t.modelId);
+            if (axis === "x") { o.tiltX = (o.tiltX + 90) % 360; }
+            else if (axis === "y") { o.tiltY = (o.tiltY + 90) % 360; }
+            else { o.rotation = (o.rotation + 90) % 360; }
+            setOrientation(t.modelId, o);
+        };
+        self.resetOrientation = function () {
+            var t = self.previewTarget();
+            if (!t) { return; }
+            if (t.item) { t.item.tiltX(0); t.item.tiltY(0); t.item.rotation(0); }
+            else { setOrientation(t.modelId, {tiltX: 0, tiltY: 0, rotation: 0}); }
+        };
+        self.previewOrientText = ko.pureComputed(function () {
+            var t = self.previewTarget();
+            return t ? "X" + t.tiltX + "° Y" + t.tiltY + "° Z" + Math.round(t.rotation) + "°" : "";
+        });
+        self.previewIsLibrary = ko.pureComputed(function () { var t = self.previewTarget(); return !!(t && t.model); });
+        self.addPreviewed = function () { var t = self.previewTarget(); if (t && t.model) { self.addToPlate(t.model); } };
         self.setView = function (az, el) { self.view.az = az; self.view.el = el; self.drawPreview(false); };
 
         self.drawPreview = function (quick) {
@@ -553,7 +605,7 @@ $(function () {
                 var w = r.width * k, h = r.height * k;
                 ctx.imageSmoothingEnabled = true;
                 ctx.drawImage(sprite, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
-                var size = BED.modelSize(mesh.xyz, mesh.count, target.tiltX, target.tiltY);
+                var size = BED.modelSize(mesh.xyz, mesh.count, target.tiltX, target.tiltY, target.rotation);
                 self.previewSize(size[0].toFixed(1) + " × " + size[1].toFixed(1) + " × " + size[2].toFixed(1) + " mm");
             }).fail(function (msg) {
                 self.previewBusy(false);
