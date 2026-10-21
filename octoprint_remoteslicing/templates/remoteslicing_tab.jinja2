@@ -89,10 +89,11 @@
                             <li class="rs-entry"><a href="#" data-bind="click: function () { $parent.browse($parent.joinPath(name)); }"><i class="fas fa-folder"></i> <span data-bind="text: name"></span></a></li>
                             <!-- /ko -->
                             <!-- ko foreach: browserFiles -->
-                            <li class="rs-entry">
-                                <a href="#" data-bind="click: function () { $parent.fetchFile($data); }"><i class="fas" data-bind="css: /\.sldprt$/i.test(name) ? 'fa-cube' : 'fa-file'"></i> <span data-bind="text: name"></span></a>
+                            <li class="rs-entry rs-file" title="Use Add to bring it into the model list" data-bind="css: {'rs-picked': $parent.pickedFile() === $parent.joinPath(name)}, click: function () { $parent.pickedFile($parent.joinPath(name)); }">
+                                <span class="rs-file-name"><i class="fas" data-bind="css: /\.sldprt$/i.test(name) ? 'fa-cube' : 'fa-file'"></i> <span data-bind="text: name"></span></span>
                                 <span class="muted rs-meta" data-bind="text: $parent.formatSize(size)"></span>
-                                <span class="muted" data-bind="visible: $parent.fetching()[$parent.joinPath(name)]">fetching…</span>
+                                <span class="muted rs-meta" data-bind="visible: $parent.fetching()[$parent.joinPath(name)]">fetching…</span>
+                                <button class="btn btn-mini btn-primary" title="Fetch it from the PC and put it on the plate" data-bind="click: function () { $parent.fetchFile($data); }, clickBubble: false, enable: $parent.canUpload() && !$parent.fetching()[$parent.joinPath(name)]"><i class="fas fa-plus"></i> Add</button>
                             </li>
                             <!-- /ko -->
                             <li class="muted" data-bind="visible: !browserDirs().length && !browserFiles().length && !browserError()">No STL or SolidWorks files here.</li>

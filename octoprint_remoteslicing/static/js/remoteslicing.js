@@ -431,6 +431,7 @@ $(function () {
         self.browserLoading = ko.observable(false);
         self.browserError = ko.observable("");
         self.fetching = ko.observable({});
+        self.pickedFile = ko.observable(null);  // highlighted file; only the Add button fetches
         self.requestId = null;
         var listingTimer = null;
 
