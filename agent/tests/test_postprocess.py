@@ -12,6 +12,7 @@ import unittest
 import numpy as np
 
 from remote_slicing_agent import postprocess
+from tests.test_thumbnail import box, decode_png
 
 HEADER = ";FLAVOR:RepRap\n;TIME:799\n;TARGET_MACHINE.NAME:VORON2 Custom\n"
 START = ";Generated with Cura_SteamEngine 5.13.0\nT0\nM104 T0 S230\nPRINT_START\nG1 F1800 E-1\n;LAYER_COUNT:3\n"
@@ -21,6 +22,11 @@ END = "M140 S0\nM107\nPRINT_END\n;End of Gcode\n;SETTING_3 {}\n"
 GCODE = HEADER + START + "".join(LAYERS) + RETRACT + END
 
 CURA_PP = r"C:\Program Files\UltiMaker Cura 5.13.0\share\cura\plugins\PostProcessingPlugin"
+
+TOP_DOWN_SCRIPT = next((p for p in (
+    os.path.expandvars(r"%APPDATA%\cura\5.13\plugins\TopDownThumbnail\resources\scripts\CreateTopDownThumbnail.py"),
+    r"B:\Downloads\Claude\Cura Plugins\Top-Down Thumbnail\resources\scripts\CreateTopDownThumbnail.py"
+) if os.path.isfile(p)), None)
 
 # Imports what Cura's own Script.py imports, so the stand-in modules are exercised the same way.
 SCRIPT_BASE = '''
@@ -293,6 +299,80 @@ class RealCuraScriptTests(unittest.TestCase):
         self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(png[16:24], (64).to_bytes(4, "big") + (48).to_bytes(4, "big"))
         out, _ = postprocess.apply(GCODE, self.snapshot([entry]), [])  # empty plate: no snapshot, like Cura
+        self.assertNotIn("thumbnail", out)
+
+
+@unittest.skipUnless(os.path.isdir(CURA_PP) and TOP_DOWN_SCRIPT, "Cura 5.13 or TopDownThumbnail plugin not installed")
+class TopDownThumbnailScriptTests(unittest.TestCase):
+    ENTRY = {
+        "key": "CreateTopDownThumbnail",
+        "class": "CreateTopDownThumbnail",
+        "file": TOP_DOWN_SCRIPT,
+        "settings": {
+            "width": 120,
+            "height": 60,
+            "bed_color": "#33363b",
+            "outline_color": "#d4d4d4",
+            "grid_spacing": 50,
+            "show_disallowed_areas": True,
+            "outline_models": True,
+            "use_thumbnail": True,
+            "use_star": False,
+        },
+    }
+
+    def tearDown(self):
+        self.assertNotIn("UM", sys.modules)
+
+    def snapshot(self):
+        # Cura's own setting types, so "False" reaches the script as False, as in a real snapshot
+        definitions = os.path.join(os.path.dirname(os.path.dirname(CURA_PP)), "resources", "definitions")
+        return {
+            "cura_version": "5.13.0",
+            "engine": {"fdmprinter": os.path.join(definitions, "fdmprinter.def.json")},
+            "summary": {
+                "machine": "VORON",
+                "extruders": [{"position": 0, "enabled": True, "color": "#c0ff00"}],
+            },
+            "resolved": {
+                "global": {
+                    "machine_width": "200",
+                    "machine_depth": "100",
+                    "machine_shape": "rectangular",
+                    "machine_center_is_zero": "False",
+                    "machine_disallowed_areas": "[]",
+                },
+                "extruder.0": {"retraction_enable": "True"},
+            },
+            "post_processing": {
+                "metadata": "[CreateTopDownThumbnail]\\\\\\n",
+                "script_base": os.path.join(CURA_PP, "Script.py"),
+                "scripts": [self.ENTRY],
+                "complete": True,
+            },
+        }
+
+    def test_draws_the_plate_from_above(self):
+        out, ran = postprocess.apply(GCODE, self.snapshot(), [(box(50, 70, -10, 10, 0, 10), "#c0ff00")])
+        self.assertEqual(ran, ["CreateTopDownThumbnail"])
+        m = re.search(
+            r";Generated with Cura_SteamEngine 5.13.0\n;\n; thumbnail begin 120x60 (\d+)\n(.*?); thumbnail end",
+            out, re.S,
+        )
+        self.assertIsNotNone(m)
+        data = "".join(line[2:] for line in m.group(2).split("\n") if line)
+        self.assertEqual(len(data), int(m.group(1)))
+        png = base64.b64decode(data)
+        img = decode_png(png)
+        # Model pixel: green-dominant
+        self.assertEqual(img[30, 95, 3], 255)
+        self.assertGreater(img[30, 95, 1], 150)
+        self.assertLess(img[30, 95, 2], 100)
+        # Bare bed pixel: #33363b = [51, 54, 59]
+        self.assertEqual(img[20, 40].tolist(), [51, 54, 59, 255])
+
+    def test_empty_plate_has_no_thumbnail(self):
+        out, _ = postprocess.apply(GCODE, self.snapshot(), [])
         self.assertNotIn("thumbnail", out)
 
 

@@ -7,8 +7,10 @@ chunks first (``split_like_cura``).
 
 The scripts themselves are Cura's own files, run against a small stand-in for the parts of Uranium/Cura they
 use: the setting values the Cura plugin exported, the global and extruder settings from the snapshot, and a
-``cura.Snapshot`` that renders the plate with ``thumbnail.render_png`` (for Create Thumbnail). A script that
-needs anything else from Cura fails the job (PostProcessError) instead of leaving its work silently undone.
+``cura.Snapshot`` that renders the plate with ``thumbnail.render_png`` (for Create Thumbnail).
+Top-Down Thumbnail's ``_renderModels`` is rendered with ``thumbnail.render_top``.
+A script that needs anything else from Cura fails the job (PostProcessError) instead of leaving its work
+silently undone.
 """
 
 import ast
@@ -335,6 +337,12 @@ class Environment:
                                    int(width), int(height))
         return _Image(png) if png else None
 
+    def _render_top(self, width, height, px_per_mm):
+        from . import thumbnail
+        return thumbnail.render_top(
+            [(tris, thumbnail.parse_color(color)) for tris, color in self.models],
+            int(width), int(height), float(px_per_mm))
+
     def _install(self):
         app = self.app
 
@@ -424,6 +432,8 @@ class Environment:
         if not hasattr(script, "_rs_values"):
             raise ShimError("%s.initialize did not call Script.initialize" % entry.get("key"))
         script._rs_values.update(entry.get("settings") or {})
+        if entry.get("key") == "CreateTopDownThumbnail" and hasattr(script, "_renderModels"):
+            script._renderModels = self._render_top
         return script
 
 

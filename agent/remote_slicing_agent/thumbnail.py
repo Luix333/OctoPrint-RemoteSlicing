@@ -113,23 +113,28 @@ def _unit(v):
     return v / np.where(length > 0, length, 1.0)
 
 
-def _fragments(sx, sy, sz, size, budget=1_000_000):
+def _fragments(sx, sy, sz, size, budget=1_000_000, height=None):
     """Covered pixel centres of every triangle: (pixel index, depth, triangle index).
 
     Triangles are grouped by bounding-box size (1, 2, 4, ... pixels) and each group is tested over all
     candidate pixels of its box at once. Barycentric weights are allowed a hair below zero, so a pixel centre
     on an edge shared by two triangles is never missed by both.
+
+    When *height* is ``None`` (the default) the image is *size* × *size*.  Otherwise the image is
+    *size* (width) × *height* and pixel indices use row-major order with *width* as the stride.
     """
-    x0 = np.clip(np.floor(sx.min(axis=1)), 0, size).astype(np.int64)
-    x1 = np.clip(np.floor(sx.max(axis=1)) + 1, 0, size).astype(np.int64)
-    y0 = np.clip(np.floor(sy.min(axis=1)), 0, size).astype(np.int64)
-    y1 = np.clip(np.floor(sy.max(axis=1)) + 1, 0, size).astype(np.int64)
+    width = size
+    height = height or size
+    x0 = np.clip(np.floor(sx.min(axis=1)), 0, width).astype(np.int64)
+    x1 = np.clip(np.floor(sx.max(axis=1)) + 1, 0, width).astype(np.int64)
+    y0 = np.clip(np.floor(sy.min(axis=1)), 0, height).astype(np.int64)
+    y1 = np.clip(np.floor(sy.max(axis=1)) + 1, 0, height).astype(np.int64)
     area = (sx[:, 1] - sx[:, 0]) * (sy[:, 2] - sy[:, 0]) - (sy[:, 1] - sy[:, 0]) * (sx[:, 2] - sx[:, 0])
     extent = np.maximum(x1 - x0, y1 - y0)
     usable = (x1 > x0) & (y1 > y0) & (np.abs(area) > 1e-12)
     out_pix, out_depth, out_owner = [], [], []
     k, low = 1, 0
-    while low < size:
+    while low < max(width, height):
         group = np.nonzero(usable & (extent > low) & (extent <= k))[0]
         oy, ox = np.divmod(np.arange(k * k), k)
         step = max(1, budget // (k * k))
@@ -148,7 +153,7 @@ def _fragments(sx, sy, sz, size, budget=1_000_000):
                    & (w0 >= -1e-7) & (w1 >= -1e-7) & (w2 >= -1e-7))
             rows, cols = np.nonzero(hit)
             tri = t[rows]
-            out_pix.append(py[rows, cols] * size + px[rows, cols])
+            out_pix.append(py[rows, cols] * width + px[rows, cols])
             out_depth.append(w0[rows, cols] * sz[tri, 0] + w1[rows, cols] * sz[tri, 1]
                              + w2[rows, cols] * sz[tri, 2])
             out_owner.append(tri)
@@ -156,6 +161,85 @@ def _fragments(sx, sy, sz, size, budget=1_000_000):
     if not out_pix:
         return np.zeros(0, np.int64), np.zeros(0), np.zeros(0, np.int64)
     return np.concatenate(out_pix), np.concatenate(out_depth), np.concatenate(out_owner)
+
+
+def render_top(models, width, height, px_per_mm):
+    """Orthographic top-down render of a plate; (height, width, 4) uint8 RGBA, or None.
+
+    Orthographic, looking straight down. The bed centre is the image centre and the back of the bed
+    is at the top.  Models are triangle arrays (N, 3, 3) in centre-origin printer coordinates
+    (x right, y back, z up, millimetres) paired with colours as (r, g, b) floats 0..1.
+
+    A point (x, y) lands at continuous screen coordinates
+    ``sx = x * px_per_mm + width / 2`` and ``sy = -y * px_per_mm + height / 2``.
+    Depth = -z (higher z is nearer the camera).
+
+    Flat shading in Cura scene coordinates (x, z, -y): ambient 0.1, two-sided diffuse,
+    specular 0.4 with shininess 20.  Light at (-1500, 3000, -1500), view straight down
+    from (0, top+1000, 0).
+    """
+    all_tris, all_colors = [], []
+    for tris, rgb in models:
+        if len(tris) == 0:
+            continue
+        all_tris.append(tris)
+        all_colors.append(np.full((len(tris), 3), rgb))
+    if not all_tris:
+        return None
+    tris = np.concatenate(all_tris, axis=0)
+    colors = np.concatenate(all_colors, axis=0)
+
+    # Scene coordinates: (x, z, -y) — X right, Y up, Z front
+    scene = np.empty_like(tris)
+    scene[:, :, 0] = tris[:, :, 0]
+    scene[:, :, 1] = tris[:, :, 2]
+    scene[:, :, 2] = -tris[:, :, 1]
+
+    # Screen coordinates
+    sx = tris[:, :, 0] * px_per_mm + width / 2.0
+    sy = -tris[:, :, 1] * px_per_mm + height / 2.0
+    depth = -tris[:, :, 2]
+
+    # Flat shading at the centroid
+    v0, v1, v2 = scene[:, 0], scene[:, 1], scene[:, 2]
+    normal = np.cross(v1 - v0, v2 - v0)
+    length = np.linalg.norm(normal, axis=1)
+    normal = normal / np.where(length > 0, length, 1.0)[:, None]
+    centroid = (v0 + v1 + v2) / 3
+
+    top = tris[:, :, 2].max()
+    LIGHT = np.array([-1500.0, 3000.0, -1500.0])
+    VIEW = np.array([0.0, top + 1000.0, 0.0])
+
+    l = _unit(LIGHT - centroid)
+    v = _unit(VIEW - centroid)
+    n_dot_l = np.sum(normal * l, axis=1)
+    reflected = -l + 2 * n_dot_l[:, None] * normal
+    spec = 0.4 * np.maximum(np.sum(v * reflected, axis=1), 0) ** 20
+
+    peak = colors.max(axis=1, keepdims=True)
+    pretty = colors * np.where(peak > 0, np.minimum(1 / np.where(peak > 0, peak, 1), 2.5), 1.0)
+    shade = np.clip(0.1 + np.abs(n_dot_l)[:, None] * pretty + spec[:, None], 0, 1)
+
+    # Filter degenerate triangles
+    keep = np.nonzero(length > 1e-12)[0]
+    if not len(keep):
+        return None
+
+    pix, depth_out, owner = _fragments(sx[keep], sy[keep], depth[keep], width, height=height)
+
+    zbuf = np.full(width * height, np.inf)
+    rgb_out = np.zeros((width * height, 3))
+    if len(pix):
+        order = np.lexsort((depth_out, pix))
+        first = order[np.unique(pix[order], return_index=True)[1]]
+        zbuf[pix[first]] = depth_out[first]
+        rgb_out[pix[first]] = shade[keep[owner[first]]]
+
+    result = np.zeros((height, width, 4), dtype=np.uint8)
+    result[:, :, :3] = np.clip(np.rint(rgb_out.reshape(height, width, 3) * 255), 0, 255).astype(np.uint8)
+    result[:, :, 3] = np.where(zbuf < np.inf, 255, 0).reshape(height, width)
+    return result
 
 
 def _crop_and_scale(result, width, height):

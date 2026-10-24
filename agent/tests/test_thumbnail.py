@@ -7,7 +7,7 @@ import zlib
 
 import numpy as np
 
-from remote_slicing_agent.thumbnail import encode_png, parse_color, prettier, render_png
+from remote_slicing_agent.thumbnail import encode_png, parse_color, prettier, render_png, render_top
 
 
 def decode_png(data):
@@ -135,6 +135,69 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(alpha[64, 64], 255)
         inside = alpha[40:88, 40:88]
         self.assertTrue((inside == 255).all())
+
+
+class RenderTopTests(unittest.TestCase):
+    def test_box_alpha_extent(self):
+        # 10 mm box at origin, px_per_mm=2, 100x80 canvas
+        # screen: sx = x*2 + 50, sy = -y*2 + 40
+        # box x=[0,10] → sx=[50,70], y=[0,10] → sy=[40,20] (the back of the bed is at the top)
+        img = render_top([(box(0, 10, 0, 10, 0, 10), (1.0, 0.0, 0.0))], 100, 80, 2)
+        self.assertEqual(img.shape, (80, 100, 4))
+        expected = np.zeros((80, 100), dtype=np.uint8)
+        expected[20:40, 50:70] = 255
+        np.testing.assert_array_equal(img[:, :, 3], expected)
+
+    def test_back_is_at_top(self):
+        # Red box at back (+Y), blue box at front (-Y); red should be higher (smaller row index)
+        red = (1.0, 0.0, 0.0)
+        blue = (0.0, 0.0, 1.0)
+        img = render_top(
+            [(box(-10, -5, 3, 12, 0, 5), red), (box(-10, -5, -12, -3, 0, 5), blue)],
+            100, 80, 2,
+        )
+        # Red box: x=[-10,-5] → sx=[30,40], y=[3,12] → sy=[34,22]
+        # Blue box: x=[-10,-5] → sx=[30,40], y=[-12,-3] → sy=[64,46]
+        # Check red-dominant pixels in red box region
+        red_region = img[22:39, 31:40]
+        blue_region = img[41:59, 31:40]
+        red_dominant = (red_region[:, :, 0] > 80) & (red_region[:, :, 2] < 80) & (red_region[:, :, 3] == 255)
+        blue_dominant = (blue_region[:, :, 2] > 80) & (blue_region[:, :, 0] < 80) & (blue_region[:, :, 3] == 255)
+        self.assertGreater(red_dominant.sum(), 5)
+        self.assertGreater(blue_dominant.sum(), 5)
+
+    def test_depth_testing_near_wins(self):
+        # Blue box (z=0-20) occludes red box (z=0-5) where they overlap
+        red = (1.0, 0.0, 0.0)
+        blue = (0.0, 0.0, 1.0)
+        img = render_top(
+            [(box(-10, 10, -10, 10, 0, 5), red), (box(-2, 2, -2, 2, 0, 20), blue)],
+            100, 80, 2,
+        )
+        # Center (0,0) → screen (50,40): inside both boxes, blue wins (higher)
+        self.assertGreater(img[40, 50, 2], 100)  # blue-dominant
+        self.assertLess(img[40, 50, 0], 100)
+        # (x=-7.5, y=0) → screen (35,40): inside red box only, red wins
+        self.assertGreater(img[40, 35, 0], 100)  # red-dominant
+        self.assertLess(img[40, 35, 2], 100)
+
+    def test_flat_top_color(self):
+        # Top face of a centered red box: well-lit, so bright red
+        img = render_top([(box(-5, 5, -5, 5, 0, 10), (1.0, 0.0, 0.0))], 40, 40, 2)
+        # Center pixel should be close to [235, 27, 27, 255]
+        np.testing.assert_array_less(np.abs(img[20, 20] - np.array([235, 27, 27, 255])), 3)
+
+    def test_empty_or_none(self):
+        self.assertIsNone(render_top([], 100, 80, 2))
+        self.assertIsNone(render_top([(np.zeros((0, 3, 3)), (1.0, 0.0, 0.0))], 100, 80, 2))
+
+    def test_non_square_shape(self):
+        img = render_top([(box(-5, 5, -5, 5, 0, 10), (0.5, 0.5, 0.5))], 200, 50, 1)
+        self.assertEqual(img.shape, (50, 200, 4))
+
+    def test_degenerate_only_is_none(self):
+        degenerate = np.array([[[0, 0, 0], [1, 1, 1], [2, 2, 2]]], dtype=np.float64)
+        self.assertIsNone(render_top([(degenerate, (1.0, 0.0, 0.0))], 100, 80, 2))
 
 
 if __name__ == "__main__":
