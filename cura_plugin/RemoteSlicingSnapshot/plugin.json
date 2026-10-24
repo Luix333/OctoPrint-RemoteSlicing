@@ -1,7 +1,7 @@
 {
     "name": "Remote Slicing Snapshot",
     "author": "Luix333",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Saves the settings Cura would send to CuraEngine, so the Remote Slicing PC agent can slice OctoPrint jobs headlessly with your last active printer, profile and materials.",
     "supported_sdk_versions": ["8.0.0"],
     "i18n-catalog": "cura"

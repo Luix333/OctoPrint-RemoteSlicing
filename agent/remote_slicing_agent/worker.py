@@ -109,6 +109,7 @@ def run_slice(task, cfg, client, reporter, folder):
     reporter.report(0.15, "placing models")
     bed = snapshot["bed"]
     meshes = []
+    plate = []  # (triangles, colour) as sliced, for post-processing scripts that draw the plate
     for i, item in enumerate(items):
         placed = mesh.place(mesh.load_stl(sources[item["model_id"]]), float(item["x"]), float(item["y"]),
                             float(item["rotation"]), bed["width"], bed["depth"], bed["center_is_zero"],
@@ -116,6 +117,7 @@ def run_slice(task, cfg, client, reporter, folder):
         path = os.path.join(folder, "m%d.stl" % i)
         mesh.write_binary_stl(path, placed)
         meshes.append((path, int(item["extruder"])))
+        plate.append((placed, extruders[int(item["extruder"])].get("color", "")))
 
     initial = engine.initial_extruder(snapshot["initial_extruder_inputs"], [nr for _, nr in meshes])
     resolved_path = os.path.join(folder, "resolved.json")
@@ -131,11 +133,19 @@ def run_slice(task, cfg, client, reporter, folder):
         raise TaskFailed("cancelled" if str(e) == "cancelled" else "CuraEngine: %s" % e)
     engine.fix_header(out, parser.header)
 
+    reporter.report(0.9, "post-processing")
+    from . import postprocess
+    try:
+        scripts = postprocess.apply_to_file(out, snapshot, plate)
+    except postprocess.PostProcessError as e:
+        raise TaskFailed(str(e))
+
     filename = "%s_%s.gcode" % (safe_name(payload.get("name")), time.strftime("%Y%m%d-%H%M%S"))
     reporter.report(0.92, "uploading")
     path = client.upload_gcode(out, filename)
     client.done(task["id"], {"path": path, "print_time_s": parser.print_time_s,
-                             "filament_mm3": parser.filament_mm3, "initial_extruder": initial})
+                             "filament_mm3": parser.filament_mm3, "initial_extruder": initial,
+                             "post_processing": scripts})
 
 
 def _convert(src, folder, name, reporter, cfg):

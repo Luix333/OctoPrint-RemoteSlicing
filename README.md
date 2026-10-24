@@ -26,6 +26,13 @@ settings come from Cura's own slice-message builder, the headless result is iden
 plate in Cura (checked line by line on a 12-extruder Voron profile, including start-G-code tokens and tool
 changes).
 
+Your **post-processing scripts** (Extensions → Post Processing → Modify G-Code) run on every job too, in
+the same order and with the same settings. The agent runs Cura's own script files on the G-code, split into the
+same per-layer chunks Cura uses, so Search and Replace and similar scripts change exactly the same lines.
+Create Thumbnail gets a picture of the plate rendered on the PC: the same viewpoint and lighting as Cura's,
+but not pixel-identical. A script that needs more of Cura than that (the print-information panel, Qt, …)
+fails the job with its name, instead of being skipped silently.
+
 The agent costs almost nothing while idle. It keeps one connection to OctoPrint open, sends a
 heartbeat once a minute, and runs in Windows' efficiency mode. Slicing happens in a short-lived child process
 at below-normal priority.

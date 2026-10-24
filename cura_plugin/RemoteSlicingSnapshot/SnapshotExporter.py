@@ -8,6 +8,7 @@ expanded start/end g-code and the per-extruder (MMU) values are computed by Cura
 StartSliceJob's own message builders, instead of being re-implemented outside Cura.
 """
 
+import configparser
 import datetime
 import importlib
 import json
@@ -58,6 +59,82 @@ def _startSliceJobClass():
 
 def _prop(stack, key: str) -> Any:
     return stack.getProperty(key, "value")
+
+
+def _settingKeys(settings: Dict[str, Any]) -> List[str]:
+    keys = []
+    for key, definition in settings.items():
+        keys.append(key)
+        keys.extend(_settingKeys(definition.get("children") or {}))
+    return keys
+
+
+def _jsonValue(value: Any) -> Any:
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _scriptFile(cls) -> str:
+    # PostProcessingPlugin registers a script module under its bare name, not under the name it imported it as
+    for name in (cls.__module__, cls.__module__.rsplit(".", 1)[-1]):
+        path = getattr(sys.modules.get(name), "__file__", None)
+        if path:
+            return path
+    execute = getattr(cls, "execute", None)
+    return getattr(getattr(execute, "__code__", None), "co_filename", "")
+
+
+def _metadataScriptNames(metadata: str) -> List[str]:
+    """Script keys in the global stack's post_processing_scripts, parsed the way PostProcessingPlugin
+    restores them (_restoreScriptInforFromMetadata)."""
+    names = []
+    for script_str in metadata.split("\n"):
+        if not script_str:
+            continue
+        script_str = script_str.replace(r"\\\n", "\n").replace(r"\\\\", "\\\\")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str  # type: ignore
+        try:
+            parser.read_string(script_str)
+        except configparser.Error:
+            continue
+        names.extend(name for name in parser.sections())
+    return names
+
+
+def buildPostProcessing(global_stack) -> Dict[str, Any]:
+    """The post-processing scripts Cura runs on every saved G-code, in order, with their setting values
+    as the scripts read them (getSettingValueByKey), so the agent can run the same scripts headlessly."""
+    metadata = global_stack.getMetaDataEntry("post_processing_scripts") or ""
+    plugin = PluginRegistry.getInstance().getPluginObject("PostProcessingPlugin")
+    if plugin is None:  # plugin disabled: Cura applies nothing
+        return {"metadata": "", "scripts": [], "complete": True}
+    scripts = []
+    for script in list(getattr(plugin, "_script_list", [])):
+        cls = type(script)
+        data = script.getSettingData()
+        scripts.append({
+            "key": data.get("key", cls.__name__),
+            "name": data.get("name", cls.__name__),
+            "class": cls.__name__,
+            "file": _scriptFile(cls),
+            "settings": {key: _jsonValue(script.getSettingValueByKey(key))
+                         for key in _settingKeys(data.get("settings") or {})},
+        })
+    # Cura skips stored scripts it has no code for; anything else missing from the live list means the
+    # plugin hasn't restored this stack's scripts yet.
+    loaded = getattr(plugin, "_loaded_scripts", {})
+    expected = [name for name in _metadataScriptNames(metadata) if name in loaded]
+    return {
+        "metadata": metadata,
+        "script_base": os.path.join(PluginRegistry.getInstance().getPluginPath("PostProcessingPlugin") or "",
+                                    "Script.py"),
+        "scripts": scripts,
+        "complete": [s["key"] for s in scripts] == expected,
+    }
 
 
 def buildSnapshot() -> Optional[Dict[str, Any]]:
@@ -172,6 +249,7 @@ def buildSnapshot() -> Optional[Dict[str, Any]]:
         "resolved": resolved,
         "gcode_by_initial_extruder": gcode_by_initial,
         "initial_extruder_inputs": initial_inputs,
+        "post_processing": buildPostProcessing(global_stack),
     }
 
 
@@ -223,6 +301,7 @@ class SnapshotExporter(Extension):
         self._announce_next = False
         self._last_created: Optional[str] = None
         self._stacks: List[Any] = []
+        self._pp_retries = 0
 
         self._timer = QTimer()
         self._timer.setSingleShot(True)
@@ -286,6 +365,12 @@ class SnapshotExporter(Extension):
             self._running = False
         if snapshot is not None:
             self._last_created = snapshot["created"]
+            # Exported before PostProcessingPlugin caught up with a stack change: export again shortly.
+            if not snapshot["post_processing"]["complete"] and self._pp_retries < 5:
+                self._pp_retries += 1
+                self._schedule()
+            else:
+                self._pp_retries = 0
         if announce:
             self._app.callLater(self._announce, error)
 
