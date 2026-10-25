@@ -74,6 +74,30 @@ SolidWorks parts are converted by SolidWorks itself, through the
 [Cura SolidWorks plugin](https://github.com/Luix333/LegacyCuraSolidWorksPlugin) (v1.0.0+) installed in Cura.
 Dropbox browsing lists the folder that the Dropbox desktop app syncs on the PC.
 
+### Slicing from Explorer's right-click menu
+
+```bash
+python -m remote_slicing_agent install-menu
+```
+
+This adds **Slice and upload** and **Slice, upload & print** to the right-click menu of `.stl` and `.sldprt`
+files. They are added for your Windows user only, so no admin rights are needed. On Windows 11 they appear under
+**Show more options**, unless you have the classic menu back.
+
+- **What happens:** a small window converts a SolidWorks part on the PC and adds the model to the Remote Slicing
+  library. It then queues a slice with the part in the middle of the bed, as it lies in the file, on Cura's
+  default extruder.
+- **The job:** it is an ordinary job in the tab's Jobs list, sliced by the agent with your Cura settings and
+  post-processing scripts. **Slice, upload & print** starts the print only if the printer is connected and idle,
+  the same check as the tab's button.
+- **The window:** it follows the job, closes itself once the G-code is uploaded (or the print has started), and
+  can cancel the job.
+- **Limits:** a part that doesn't fit the bed is refused before anything is sent. If the agent isn't running, it
+  is started.
+
+`python -m remote_slicing_agent remove-menu` takes the entries out again. The entries point at this `agent`
+folder and the Python that ran `install-menu`, so run it again if either moves.
+
 ## Development
 
 ```bash

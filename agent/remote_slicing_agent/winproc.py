@@ -56,6 +56,8 @@ if IS_WINDOWS:
 
     _kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, BOOL, ctypes.c_wchar_p]
     _kernel32.CreateMutexW.restype = HANDLE
+    _kernel32.OpenMutexW.argtypes = [DWORD, BOOL, ctypes.c_wchar_p]
+    _kernel32.OpenMutexW.restype = HANDLE
 
     _kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
     _kernel32.CreateJobObjectW.restype = HANDLE
@@ -307,6 +309,20 @@ def single_instance(name="Local\\RemoteSlicingAgent"):
         return handle
     except OSError:
         return None
+
+
+def instance_running(name="Local\\RemoteSlicingAgent"):
+    """True when a running agent holds the single-instance mutex; checked without taking it."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        handle = _kernel32.OpenMutexW(0x00100000, False, name)  # SYNCHRONIZE
+    except OSError:
+        return False
+    if not handle:
+        return False
+    _kernel32.CloseHandle(handle)
+    return True
 
 
 def process_memory():

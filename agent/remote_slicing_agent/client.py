@@ -336,6 +336,25 @@ class Client:
             fields={"name": name},
         )
 
+    # -- the tab's own routes, for slicing from Explorer's right-click menu --
+    # (the agent's key belongs to the user who approved it, so it may do what that user does in the tab)
+
+    def add_library_model(self, file_path, filename):
+        """Add an STL to the model library, as an upload in the tab does. Returns the model dict."""
+        return self.upload_file(f"{self.PLUGIN}/models", "file", file_path, filename)["model"]
+
+    def submit_slice(self, name, items, start_print):
+        """Queue a slice job, as the tab's Slice buttons do. Returns the task dict."""
+        return self.post_json(f"{self.PLUGIN}/slice",
+                              {"name": name, "items": items, "start_print": bool(start_print)})["task"]
+
+    def state(self):
+        """The tab's state: models, tasks and agent status."""
+        return self.get_json(f"{self.PLUGIN}/state")
+
+    def cancel_task(self, task_id):
+        return self.post_json(f"{self.PLUGIN}/tasks/{urllib.parse.quote(task_id, safe='')}/cancel", {})
+
 
 # ---------------------------------------------------------------------------
 # App-key request flow
