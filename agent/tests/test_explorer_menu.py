@@ -1,4 +1,4 @@
-"""Tests for remote_slicing_agent.explorer_menu (Explorer right-click entries)."""
+"""Tests for remote_slicing_agent.explorer_menu (Explorer's "Slice..." submenu)."""
 
 import sys
 import unittest
@@ -6,63 +6,89 @@ import uuid
 
 from remote_slicing_agent import explorer_menu as em
 
+BASE = r"Software\Classes\SystemFileAssociations"
+
 
 class EntryTests(unittest.TestCase):
-    def test_two_verbs_per_extension_with_quoted_commands(self):
-        out = dict(em.entries(r"C:\Py\pythonw.exe", r"B:\RS\agent\quick_slice.pyw", r"C:\Cura\UltiMaker-Cura.exe,0"))
-        base = r"Software\Classes\SystemFileAssociations"
+    def setUp(self):
+        self.out = dict(em.entries(r"C:\Py\pythonw.exe", r"B:\RS\agent\quick_slice.pyw", r"C:\Cura\UltiMaker-Cura.exe,0"))
+
+    def test_one_cascading_menu_per_extension(self):
         for ext in (".stl", ".sldprt"):
-            upload = r"%s\%s\shell\RemoteSlicing1Upload" % (base, ext)
-            print_ = r"%s\%s\shell\RemoteSlicing2Print" % (base, ext)
-            self.assertEqual(out[upload], {"MUIVerb": "Slice and upload", "Icon": r"C:\Cura\UltiMaker-Cura.exe,0"})
-            self.assertEqual(out[print_]["MUIVerb"], "Slice, upload && print")  # && shows as &
-            self.assertEqual(out[upload + r"\command"][""],
-                             r'"C:\Py\pythonw.exe" "B:\RS\agent\quick_slice.pyw" "%1"')
-            self.assertEqual(out[print_ + r"\command"][""],
-                             r'"C:\Py\pythonw.exe" "B:\RS\agent\quick_slice.pyw" --print "%1"')
-        self.assertEqual(len(out), 8)
+            menu = r"%s\%s\shell\RemoteSlicing" % (BASE, ext)
+            self.assertEqual(self.out[menu], {"MUIVerb": "Slice...", "SubCommands": "",
+                                              "Icon": r"C:\Cura\UltiMaker-Cura.exe,0"})
+        self.assertEqual(len(self.out), 2 * (1 + 2 * 11))
+
+    def test_submenu_entries_in_order(self):
+        prefix = r"%s\.stl\shell\RemoteSlicing\shell" % BASE
+        keys = sorted(k for k in self.out if k.startswith(prefix) and not k.endswith("command"))
+        labels = [self.out[k]["MUIVerb"] for k in keys]
+        self.assertEqual(labels, ["and upload (center)"] + ["upload and print (%s)" % p for p in (
+            "top-left", "top-mid", "top-right", "mid-left", "center", "mid-right", "btm-left", "btm-mid",
+            "btm-right")] + ["more options"])
+        self.assertEqual(self.out[keys[0]]["CommandFlags"], 0x40)    # separator after "and upload"
+        self.assertEqual(self.out[keys[-1]]["CommandFlags"], 0x20)   # separator before "more options"
+        self.assertNotIn("CommandFlags", self.out[keys[1]])
+
+    def test_commands(self):
+        prefix = r"%s\.sldprt\shell\RemoteSlicing\shell" % BASE
+        launch = r'"C:\Py\pythonw.exe" "B:\RS\agent\quick_slice.pyw" --gather '
+        self.assertEqual(self.out[prefix + r"\01upload\command"][""], launch + '--place center "%1"')
+        self.assertEqual(self.out[prefix + r"\02print-top-left\command"][""],
+                         launch + '--print --place top-left "%1"')
+        self.assertEqual(self.out[prefix + r"\10print-btm-right\command"][""],
+                         launch + '--print --place btm-right "%1"')
+        self.assertEqual(self.out[prefix + r"\11options\command"][""], launch + '--options "%1"')
+
+    def test_commands_parse_as_quick_slice_arguments(self):
+        import argparse
+        import shlex
+        from remote_slicing_agent import plate_layout
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--print", dest="start_print", action="store_true")
+        parser.add_argument("--place", choices=plate_layout.POSITIONS, default="center")
+        parser.add_argument("--options", action="store_true")
+        parser.add_argument("--gather", action="store_true")
+        parser.add_argument("files", nargs="+")
+        for path, values in self.out.items():
+            if path.endswith("command"):
+                args = shlex.split(values[""].replace("%1", r"C:\My Parts\a b.stl"), posix=False)[2:]
+                parsed = parser.parse_args([a.strip('"') for a in args])
+                self.assertTrue(parsed.gather)
+                self.assertEqual(parsed.files, [r"C:\My Parts\a b.stl"])
 
     def test_no_icon_value_without_cura(self):
         self.assertNotIn("Icon", em.entries("p", "l", "")[0][1])
 
-    def test_command_line_parses_back_to_the_quick_slice_arguments(self):
-        from remote_slicing_agent import quick_slice
-        command = dict(em.entries("pythonw", "launcher", ""))[
-            r"Software\Classes\SystemFileAssociations\.stl\shell\RemoteSlicing2Print\command"][""]
-        args = command.replace('"%1"', '"C:\\My Parts\\a b.stl"').split('" "', 1)[1]
-        self.assertTrue(args.startswith('launcher" --print "C:\\My Parts\\a b.stl"'))
-        self.assertTrue(callable(quick_slice.main))
-
 
 @unittest.skipUnless(sys.platform == "win32", "Windows registry")
 class RegistryTests(unittest.TestCase):
-    def test_install_and_uninstall_round_trip(self):
+    def setUp(self):
         import winreg
-        root = "Software\\RemoteSlicingTest-%s" % uuid.uuid4().hex[:8]
-        classes = root + "\\Classes"
-        try:
-            written = em.install(classes)
-            found = em.installed(classes)
-            self.assertEqual(len(found), 4)
-            for path, values in written:
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
-                    for name, data in values.items():
-                        self.assertEqual(winreg.QueryValueEx(key, name)[0], data)
-            self.assertTrue(all(cmd.endswith('"%1"') and "quick_slice.pyw" in cmd for cmd in found.values()))
-            self.assertEqual(len(em.uninstall(classes)), 8)
-            self.assertEqual(em.installed(classes), {})
-            self.assertEqual(em.uninstall(classes), [])  # twice is fine
-        finally:
-            for sub in ("\\.stl\\shell", "\\.sldprt\\shell", "\\.stl", "\\.sldprt", ""):
-                try:
-                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, classes + "\\SystemFileAssociations" + sub)
-                except OSError:
-                    pass
-            for path in (classes, root):
-                try:
-                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
-                except OSError:
-                    pass
+        self.winreg = winreg
+        self.root = "Software\\RemoteSlicingTest-%s" % uuid.uuid4().hex[:8]
+        self.classes = self.root + "\\Classes"
+        self.addCleanup(em._delete_tree, winreg, self.root)
+
+    def test_install_replaces_the_old_flat_entries_and_uninstall_removes_everything(self):
+        winreg = self.winreg
+        old = "%s\\SystemFileAssociations\\.stl\\shell\\RemoteSlicing1Upload\\command" % self.classes
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, old, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "old")
+        written = em.install(self.classes)
+        self.assertEqual(len(em.installed(self.classes)), 22)
+        with self.assertRaises(FileNotFoundError):
+            winreg.OpenKey(winreg.HKEY_CURRENT_USER, old)
+        for path, values in written:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+                for name, data in values.items():
+                    value, kind = winreg.QueryValueEx(key, name)
+                    self.assertEqual(value, data)
+                    self.assertEqual(kind, winreg.REG_DWORD if isinstance(data, int) else winreg.REG_SZ)
+        self.assertEqual(em.uninstall(self.classes), 48)  # with each menu's "shell" container key
+        self.assertEqual(em.installed(self.classes), {})
+        self.assertEqual(em.uninstall(self.classes), 0)
 
 
 if __name__ == "__main__":

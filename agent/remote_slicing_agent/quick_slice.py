@@ -1,10 +1,13 @@
-"""Slice a model straight from Windows Explorer: right-click an .stl or .sldprt file > "Slice and upload" or
-"Slice, upload & print" (the menu entries are written by explorer_menu.py).
+"""Slice models straight from Windows Explorer: right-click .stl / .sldprt files > "Slice..." (the menu entries are
+written by explorer_menu.py).
 
-Explorer runs ``pythonw agent/quick_slice.pyw [--print] <file>``, which opens a small window and:
-- converts a SolidWorks part to STL on this PC (like a Dropbox fetch does);
-- adds the model to the Remote Slicing library in OctoPrint;
-- queues a slice of it in the middle of the bed, as laid (no tilt or turn), on Cura's default extruder;
+Explorer runs ``pythonw agent/quick_slice.pyw --gather [--print] [--place POS | --options] <file>`` once per
+selected file; explorer_batch.py turns the processes of one multi-file selection into a single job. A small
+window then:
+- converts SolidWorks parts to STL on this PC (as a Dropbox fetch does);
+- lays the parts out: packed together at one of nine spots on the bed (the centre for "and upload"), as they lie
+  in their files, on Cura's default extruder; or, with --options, in the plate editor (plate_editor.py);
+- adds the models to the Remote Slicing library in OctoPrint and queues one slice job for the whole plate;
 - follows that job, the same one the tab's Jobs list shows, until OctoPrint has the G-code and, with --print,
   until the print has started.
 
@@ -48,13 +51,6 @@ class Stopped(Exception):
 
 # ------------------------------------------------------------------------------------------------- decisions
 
-def bed_center(bed):
-    """The middle of the bed in the coordinates the tab and the agent use for a model's centre."""
-    if bed.get("center_is_zero"):
-        return 0.0, 0.0
-    return float(bed["width"]) / 2, float(bed["depth"]) / 2
-
-
 def choose_extruder(snapshot):
     """Cura's default extruder (the one a model gets when it is loaded), or else the first enabled one."""
     extruders = snapshot["summary"]["extruders"]
@@ -65,20 +61,28 @@ def choose_extruder(snapshot):
     return int(default) if int(default) in enabled else enabled[0]
 
 
-def check_fits(size, bed):
-    """``size`` is the part's (x, y, z) extent in mm. The part stands in the middle of the bed, so it has to fit
-    inside the bed less Cura's border (brim, skirt and travel clearance) on every side."""
-    edge = float(bed.get("edge_disallowed_size") or 0)
-    room = (float(bed["width"]) - 2 * edge, float(bed["depth"]) - 2 * edge, float(bed["height"]))
-    if any(s > r + 1e-6 for s, r in zip(size, room)):
-        raise QuickSliceError("The part is %.0f x %.0f x %.0f mm and the printable space is %.0f x %.0f x %.0f mm. "
-                              "Turn it in the Remote Slicing tab instead." % (tuple(size) + room))
+def files_title(paths):
+    names = [os.path.basename(p) for p in paths]
+    if len(names) <= 1:
+        return names[0] if names else ""
+    if len(names) <= 3:
+        return ", ".join(names[:-1]) + " and " + names[-1]
+    return "%s and %d more" % (", ".join(names[:3]), len(names) - 3)
 
 
-def slice_item(model_id, snapshot):
-    x, y = bed_center(snapshot["bed"])
-    return {"model_id": model_id, "x": x, "y": y, "rotation": 0, "tilt_x": 0, "tilt_y": 0,
-            "extruder": choose_extruder(snapshot)}
+def action_text(start_print, place=None, edited=False):
+    what = "Slice, upload and print" if start_print else "Slice and upload"
+    if edited:
+        return what + " (your layout)"
+    return "%s (%s)" % (what, place or "center")
+
+
+def plate_name(parts):
+    names = []
+    for part in parts:
+        if part.name not in names:
+            names.append(part.name)
+    return ", ".join(names)
 
 
 def describe(task, start_print, waited_for_print=0.0):
@@ -139,11 +143,15 @@ def _api_message(error):
 # ------------------------------------------------------------------------------------------------------- job
 
 class QuickSlice:
-    """The work behind the window; runs on its own thread and talks to the window only through ``report``."""
+    """The work behind the window; runs on its own thread and talks to the window only through ``report`` and,
+    for --options, ``edit(parts, snapshot)``, which blocks until the user has laid the plate out and returns
+    ``(parts, start_print)``, or None when they cancelled."""
 
-    def __init__(self, path, start_print, cfg, client, report):
-        self.path = path
+    def __init__(self, paths, start_print, cfg, client, report, place="center", edit=None):
+        self.paths = list(paths)
         self.start_print = start_print
+        self.place = place
+        self.edit = edit
         self.cfg = cfg
         self.client = client
         self.report = report  # report(progress or None, text, finished=False, ok=False)
@@ -165,7 +173,7 @@ class QuickSlice:
             else:
                 self.report(None, "OctoPrint refused it: %s" % _api_message(e), True, False)
         except Exception as e:
-            log.exception("quick slice of %s failed", self.path)
+            log.exception("quick slice of %s failed", self.paths)
             self.report(None, "%s: %s" % (type(e).__name__, e), True, False)
 
     def _checkpoint(self):
@@ -175,47 +183,91 @@ class QuickSlice:
             raise Stopped("Closed.")
 
     def _run(self):
-        name, ext = os.path.splitext(os.path.basename(self.path))
-        if ext.lower() not in EXTENSIONS:
-            raise QuickSliceError("Only .stl and .sldprt files can be sliced.")
+        for path in self.paths:
+            if os.path.splitext(path)[1].lower() not in EXTENSIONS:
+                raise QuickSliceError("Only .stl and .sldprt files can be sliced (%s isn't one)." % os.path.basename(path))
         if not self.cfg.get("octoprint_url") or not self.cfg.get("api_key"):
             raise QuickSliceError("The Remote Slicing agent isn't connected to OctoPrint yet: "
                                   "run python -m remote_slicing_agent setup.")
         snapshot = load_snapshot()
+        from . import plate_layout
         os.makedirs(config.work_dir(), exist_ok=True)
         folder = tempfile.mkdtemp(prefix="quick-", dir=config.work_dir())
         try:
-            stl = self.path
-            if ext.lower() == ".sldprt":
-                self.report(None, "Converting in SolidWorks…")
-                from . import solidworks
-                stl = os.path.join(folder, "part.stl")
+            parts = self._load_parts(folder, snapshot)
+            if self.edit is not None:
+                try:  # start from the packed layout in the middle; the editor shows whatever doesn't fit
+                    plate_layout.place_group(parts, snapshot["bed"], "center")
+                except plate_layout.LayoutError:
+                    pass
+                self.report(None, "Waiting for your layout…")
+                decision = self.edit(parts, snapshot)
+                if decision is None:
+                    raise Stopped("Cancelled; nothing was sent to OctoPrint.")
+                parts, self.start_print = decision
+            else:
                 try:
-                    solidworks.convert(self.path, stl, self.cfg.get("solidworks_plugin_dir", ""))
-                except solidworks.SolidWorksError as e:
+                    plate_layout.place_group(parts, snapshot["bed"], self.place)
+                except plate_layout.LayoutError as e:
                     raise QuickSliceError(str(e))
             self._checkpoint()
-            self.report(None, "Checking the size…")
-            from . import mesh
-            points = mesh.load_stl(stl).reshape(-1, 3)
-            if not len(points):
-                raise QuickSliceError("The file has no triangles.")
-            check_fits(tuple(float(v) for v in points.max(axis=0) - points.min(axis=0)), snapshot["bed"])
-            item = slice_item(None, snapshot)
-            self._checkpoint()
-            self.report(None, "Sending the model to OctoPrint…")
-            model = self.client.add_library_model(stl, name + ".stl")
+            model_ids = self._upload(parts)
         finally:
             shutil.rmtree(folder, ignore_errors=True)
         self._checkpoint()
-        item["model_id"] = model["id"]
-        task = self.client.submit_slice(name, [item], self.start_print)
+        items = []
+        for part in parts:
+            item = part.item(model_ids[part.source])
+            item["x"], item["y"] = plate_layout.agent_xy(item["x"], item["y"], snapshot["bed"])
+            items.append(item)
+        task = self.client.submit_slice(plate_name(parts), items, self.start_print)
         self.task_id = task["id"]
-        log.info("queued %s for %s (T%d, print=%s)", self.task_id, self.path, item["extruder"], self.start_print)
+        log.info("queued %s for %d part(s) from %s (print=%s)", self.task_id, len(items), self.paths, self.start_print)
         if not winproc.instance_running():
             self.report(0.0, "Starting the PC agent…")
             start_agent()
         self._follow()
+
+    def _load_parts(self, folder, snapshot):
+        from . import mesh, plate_layout
+        extruder = choose_extruder(snapshot)
+        parts = []
+        for k, path in enumerate(self.paths, 1):
+            name, ext = os.path.splitext(os.path.basename(path))
+            count = " (%d of %d)" % (k, len(self.paths)) if len(self.paths) > 1 else ""
+            stl = path
+            if ext.lower() == ".sldprt":
+                self.report(None, "Converting %s in SolidWorks…%s" % (os.path.basename(path), count))
+                from . import solidworks
+                stl = os.path.join(folder, "part%d.stl" % k)
+                try:
+                    solidworks.convert(path, stl, self.cfg.get("solidworks_plugin_dir", ""))
+                except solidworks.SolidWorksError as e:
+                    raise QuickSliceError("%s: %s" % (os.path.basename(path), e))
+            self._checkpoint()
+            self.report(None, "Reading %s…%s" % (os.path.basename(path), count))
+            tris = mesh.load_stl(stl)
+            if not len(tris):
+                raise QuickSliceError("%s has no triangles." % os.path.basename(path))
+            part = plate_layout.Part(name, tris, source=stl)
+            part.extruder = extruder
+            parts.append(part)
+        return parts
+
+    def _upload(self, parts):
+        """Add each file once to the model library (copies of a part share it); {source: model id}."""
+        sources = []
+        for part in parts:
+            if part.source not in sources:
+                sources.append(part.source)
+        ids = {}
+        for k, source in enumerate(sources, 1):
+            name = next(p.name for p in parts if p.source == source)
+            count = " (%d of %d)" % (k, len(sources)) if len(sources) > 1 else ""
+            self.report(None, "Sending %s to OctoPrint…%s" % (name, count))
+            ids[source] = self.client.add_library_model(source, name + ".stl")["id"]
+            self._checkpoint()
+        return ids
 
     def _follow(self):
         done_at = None
@@ -250,10 +302,30 @@ class QuickSlice:
 
 # ---------------------------------------------------------------------------------------------------- window
 
+def use_cura_icon(window):
+    """Cura's icon in a Tk window's title bar and taskbar instead of Tk's feather (Tk can't read an .exe icon)."""
+    try:
+        import ctypes
+        from .explorer_menu import cura_icon
+        exe = cura_icon().rsplit(",", 1)[0]
+        if not exe:
+            return
+        user32 = ctypes.windll.user32
+        window.update_idletasks()
+        hwnd = user32.GetParent(window.winfo_id())  # the frame window Tk wraps its toplevel in
+        large, small = ctypes.c_void_p(), ctypes.c_void_p()
+        if ctypes.windll.shell32.ExtractIconExW(exe, 0, ctypes.byref(large), ctypes.byref(small), 1) > 0:
+            for kind, icon in ((1, large), (0, small)):  # WM_SETICON: ICON_BIG = 1, ICON_SMALL = 0
+                if icon.value:
+                    user32.SendMessageW(hwnd, 0x0080, kind, icon.value)
+    except Exception:
+        pass
+
+
 class Window:
     """A small always-visible progress window (Tk ships with Python, so no extra dependency)."""
 
-    def __init__(self, filename, start_print, octoprint_url):
+    def __init__(self, title, subtitle, octoprint_url):
         import tkinter as tk
         from tkinter import font, ttk
         try:
@@ -266,6 +338,7 @@ class Window:
         self.on_close = lambda: None
         self.updates = queue.Queue()
         self.finished = False
+        self.closed = False
         self.root = root = tk.Tk()
         root.title("Remote Slicing")
         root.resizable(False, False)
@@ -274,9 +347,11 @@ class Window:
         frame.grid(sticky="nsew")
         bold = font.nametofont("TkDefaultFont").copy()
         bold.configure(weight="bold", size=bold.cget("size") + 2)
-        ttk.Label(frame, text=filename, font=bold).grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(frame, text="Slice, upload & print" if start_print else "Slice and upload",
-                  foreground="#666").grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        self.heading = ttk.Label(frame, text=title, font=bold, justify="left")
+        self.heading.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.heading.bind("<Configure>", lambda event: self.heading.configure(wraplength=max(event.width, 200)))
+        self.subtitle = ttk.Label(frame, text=subtitle, foreground="#666")
+        self.subtitle.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
         # sets the window width; in points, so it grows with the display scaling like the text does
         self.bar = ttk.Progressbar(frame, length="240p", mode="determinate", maximum=1.0)
         self.bar.grid(row=2, column=0, columnspan=3, sticky="ew")
@@ -301,40 +376,55 @@ class Window:
         root.attributes("-topmost", True)  # come to the front once, then behave normally
         root.after(1500, lambda: root.attributes("-topmost", False))
         root.after(100, self._poll)
-        self._use_cura_icon()
-
-    def _use_cura_icon(self):
-        """Cura's icon in the title bar and taskbar instead of Tk's feather (Tk can't read an .exe icon itself)."""
-        try:
-            import ctypes
-            from .explorer_menu import cura_icon
-            exe = cura_icon().rsplit(",", 1)[0]
-            if not exe:
-                return
-            user32 = ctypes.windll.user32
-            hwnd = user32.GetParent(self.root.winfo_id())  # the frame window Tk wraps its toplevel in
-            large, small = ctypes.c_void_p(), ctypes.c_void_p()
-            if ctypes.windll.shell32.ExtractIconExW(exe, 0, ctypes.byref(large), ctypes.byref(small), 1) > 0:
-                for kind, icon in ((1, large), (0, small)):  # WM_SETICON: ICON_BIG = 1, ICON_SMALL = 0
-                    if icon.value:
-                        user32.SendMessageW(hwnd, 0x0080, kind, icon.value)
-        except Exception:
-            pass
+        use_cura_icon(root)
 
     def report(self, progress, text, finished=False, ok=False):
         """Thread-safe: the job thread calls this."""
-        self.updates.put((progress, text, finished, ok))
+        self.updates.put(("status", progress, text, finished, ok))
+
+    def request_edit(self, parts, snapshot):
+        """Thread-safe and blocking: show the plate editor and wait for the user's layout (see QuickSlice)."""
+        reply = {"done": threading.Event(), "result": None}
+        self.updates.put(("edit", parts, snapshot, reply))
+        while not reply["done"].wait(0.2):
+            if self.closed:
+                return None
+        return reply["result"]
 
     def _poll(self):
+        if self.closed:
+            return
         latest = None
         try:
             while True:
-                latest = self.updates.get_nowait()
+                message = self.updates.get_nowait()
+                if message[0] == "edit":
+                    self._open_editor(*message[1:])
+                else:
+                    latest = message[1:]
         except queue.Empty:
             pass
         if latest is not None and not self.finished:
             self._show(*latest)
         self.root.after(150, self._poll)
+
+    def _open_editor(self, parts, snapshot, reply):
+        from .plate_editor import PlateEditor
+
+        def on_slice(new_parts, start_print):
+            reply["result"] = (new_parts, start_print)
+            self.subtitle.configure(text=action_text(start_print, edited=True))
+            self.root.deiconify()
+            self.root.lift()
+            reply["done"].set()
+
+        def on_cancel():
+            reply["done"].set()
+            self.close()
+
+        self.root.withdraw()
+        editor = PlateEditor(self.root, parts, snapshot, on_slice, on_cancel)
+        use_cura_icon(editor.win)
 
     def _show(self, progress, text, finished, ok):
         self.status.configure(text=text)
@@ -352,6 +442,8 @@ class Window:
                 self._countdown(AUTO_CLOSE_S, text)
 
     def _countdown(self, seconds, text):
+        if self.closed:
+            return
         if seconds <= 0:
             self.close()
             return
@@ -364,6 +456,9 @@ class Window:
         self.on_cancel()
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True
         self.on_close()
         self.root.destroy()
 
@@ -382,22 +477,43 @@ def _setup_log():
         pass
 
 
+def action_key(start_print, place, options):
+    """Which menu entry ran this; files are only batched with others from the same entry."""
+    return "options" if options else "%s-%s" % ("print" if start_print else "upload", place)
+
+
 def main(argv=None):
+    from .plate_layout import POSITIONS
     parser = argparse.ArgumentParser(prog="quick_slice")
     parser.add_argument("--print", dest="start_print", action="store_true", help="start the print when it is uploaded")
-    parser.add_argument("file")
+    parser.add_argument("--place", choices=POSITIONS, default="center", help="where the parts go on the bed")
+    parser.add_argument("--options", action="store_true", help="lay the plate out in the editor first")
+    parser.add_argument("--gather", action="store_true",
+                        help="Explorer: one process per selected file; slice the whole selection as one job")
+    parser.add_argument("files", nargs="+")
     args = parser.parse_args(argv)
     _setup_log()
+    files = [os.path.abspath(f) for f in args.files]
+    if args.gather:
+        from . import explorer_batch
+        gathered = explorer_batch.gather(files[0], action_key(args.start_print, args.place, args.options))
+        if not gathered:
+            return 0  # another process took this file into its job
+        files = gathered + [f for f in files[1:] if f not in gathered]
+        log.info("gathered %d file(s): %s", len(files), files)
     cfg = config.load()
-    window = Window(os.path.basename(args.file), args.start_print, cfg.get("octoprint_url"))
-    job = QuickSlice(os.path.abspath(args.file), args.start_print, cfg,
-                     Client(cfg.get("octoprint_url") or "http://localhost", cfg.get("api_key") or ""), window.report)
+    subtitle = "More options" if args.options else action_text(args.start_print, args.place)
+    window = Window(files_title(files), subtitle, cfg.get("octoprint_url"))
+    job = QuickSlice(files, args.start_print, cfg,
+                     Client(cfg.get("octoprint_url") or "http://localhost", cfg.get("api_key") or ""), window.report,
+                     place=args.place, edit=window.request_edit if args.options else None)
     window.on_cancel = job.cancel.set
     window.on_close = job.stop.set
     # Not a daemon: closing the window mid-conversion lets SolidWorks finish and be released properly.
     worker = threading.Thread(target=job.run, name="quick-slice")
     worker.start()
     window.root.mainloop()
+    window.closed = True
     job.stop.set()
     worker.join()
     return 0

@@ -311,6 +311,15 @@ def single_instance(name="Local\\RemoteSlicingAgent"):
         return None
 
 
+def release(handle):
+    """Close a handle from single_instance(); the named mutex goes away with its last handle."""
+    if IS_WINDOWS and handle not in (None, True):
+        try:
+            _kernel32.CloseHandle(handle)
+        except OSError:
+            pass
+
+
 def instance_running(name="Local\\RemoteSlicingAgent"):
     """True when a running agent holds the single-instance mutex; checked without taking it."""
     if not IS_WINDOWS:

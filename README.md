@@ -80,20 +80,42 @@ Dropbox browsing lists the folder that the Dropbox desktop app syncs on the PC.
 python -m remote_slicing_agent install-menu
 ```
 
-This adds **Slice and upload** and **Slice, upload & print** to the right-click menu of `.stl` and `.sldprt`
-files. They are added for your Windows user only, so no admin rights are needed. On Windows 11 they appear under
+This adds a **Slice...** submenu to the right-click menu of `.stl` and `.sldprt` files:
+
+```
+Slice...
+    and upload (center)
+    upload and print (top-left)   ... (top-mid, top-right, mid-left, center, mid-right, btm-left, btm-mid)
+    upload and print (btm-right)
+    more options
+```
+
+It is added for your Windows user only, so no admin rights are needed. On Windows 11 it appears under
 **Show more options**, unless you have the classic menu back.
 
-- **What happens:** a small window converts a SolidWorks part on the PC and adds the model to the Remote Slicing
-  library. It then queues a slice with the part in the middle of the bed, as it lies in the file, on Cura's
-  default extruder.
-- **The job:** it is an ordinary job in the tab's Jobs list, sliced by the agent with your Cura settings and
-  post-processing scripts. **Slice, upload & print** starts the print only if the printer is connected and idle,
-  the same check as the tab's button.
+- **Several files at once:** select them all and choose an entry once. They become **one job**, with every part on
+  the same plate.
+- **The quick entries:** the parts are packed together in rows, as they lie in their files, on Cura's default
+  extruder.
+  - **and upload** puts the group in the middle of the bed and uploads it.
+  - Each **upload and print** entry puts it at that spot and starts printing. "Top" is the back of the bed, as on
+    the tab's plate.
+  - Corner and side spots keep 10 mm from the bed edge, on top of Cura's own border.
+- **more options:** opens a plate editor like the Remote Slicing tab before anything is sent. You can:
+  - drag parts, turn them (mouse wheel, buttons or degrees) and tilt them in 90° steps;
+  - pick each part's extruder;
+  - duplicate or remove parts;
+  - arrange them, or move them all to one of the nine spots.
+
+  Parts outside the bed or too tall are shown in red and block slicing. Overlaps ask first.
+- **What happens next:** a small window converts SolidWorks parts on the PC and adds the models to the Remote
+  Slicing library. It queues one ordinary job, the same as the tab's Jobs list shows, which the agent slices with
+  your Cura settings and post-processing scripts.
+- **Printing:** a print starts only if the printer is connected and idle, the same check as the tab's button.
 - **The window:** it follows the job, closes itself once the G-code is uploaded (or the print has started), and
   can cancel the job.
-- **Limits:** a part that doesn't fit the bed is refused before anything is sent. If the agent isn't running, it
-  is started.
+- **Limits:** parts that don't fit where they were asked to go are refused before anything is sent. If the agent
+  isn't running, it is started.
 
 `python -m remote_slicing_agent remove-menu` takes the entries out again. The entries point at this `agent`
 folder and the Python that ran `install-menu`, so run it again if either moves.

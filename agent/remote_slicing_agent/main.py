@@ -275,20 +275,20 @@ def cmd_install_menu(args):
     for path, values in explorer_menu.install():
         if "" in values:
             print(path, "->", values[""])
-    print('Right-click an .stl or .sldprt file: "Slice and upload" and "Slice, upload & print".')
+    print('Right-click .stl or .sldprt files: "Slice..." (upload, upload and print at nine spots, more options).')
     return 0
 
 
 def cmd_remove_menu(args):
     from . import explorer_menu
     removed = explorer_menu.uninstall()
-    print("removed %d registry keys" % len(removed) if removed else "the menu entries were not installed")
+    print("removed %d registry keys" % removed if removed else "the menu entries were not installed")
     return 0
 
 
 def cmd_quick_slice(args):
     from . import quick_slice
-    return quick_slice.main((["--print"] if args.start_print else []) + [args.file])
+    return quick_slice.main(args.quick_args)
 
 
 def main(argv=None):
@@ -300,12 +300,12 @@ def main(argv=None):
     sub.add_parser("status", help="show the configuration and the last log lines")
     sub.add_parser("install-startup", help="start the agent when you log in to Windows")
     sub.add_parser("remove-startup", help="stop starting the agent at login")
-    sub.add_parser("install-menu", help='add "Slice and upload" / "Slice, upload & print" to the right-click '
-                                        'menu of .stl and .sldprt files in Explorer')
+    sub.add_parser("install-menu", help='add "Slice..." to the right-click menu of .stl and .sldprt files in '
+                                        'Explorer')
     sub.add_parser("remove-menu", help="remove those right-click entries")
-    quick = sub.add_parser("quick-slice", help="slice one file in the middle of the bed (what the menu runs)")
-    quick.add_argument("--print", dest="start_print", action="store_true")
-    quick.add_argument("file")
+    quick = sub.add_parser("quick-slice", help="slice files as one plate, what the menu runs: "
+                                               "[--print] [--place POSITION | --options] FILE...")
+    quick.add_argument("quick_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     commands = {"setup": cmd_setup, "status": cmd_status, "install-startup": cmd_install_startup,
                 "remove-startup": cmd_remove_startup, "install-menu": cmd_install_menu,
