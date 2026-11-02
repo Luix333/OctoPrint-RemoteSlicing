@@ -85,26 +85,29 @@ class PushSocket:
         else:
             ws_url = base.replace("http://", "ws://", 1) + "/sockjs/websocket"
 
-        self._ws = websocket.create_connection(
-            ws_url,
-            timeout=self.connect_timeout,
-            header=["X-Api-Key: " + self.client.api_key],
-        )
+        try:
+            self._ws = websocket.create_connection(
+                ws_url,
+                timeout=self.connect_timeout,
+                header=["X-Api-Key: " + self.client.api_key],
+            )
 
-        # Subscribe to our plugin only
-        self._ws.send(
-            json.dumps({
-                "subscribe": {
-                    "state": False,
-                    "plugins": [self.plugin],
-                    "events": False,
-                },
-            })
-        )
+            # Subscribe to our plugin only
+            self._ws.send(
+                json.dumps({
+                    "subscribe": {
+                        "state": False,
+                        "plugins": [self.plugin],
+                        "events": False,
+                    },
+                })
+            )
 
-        # Authenticate after subscribing: OctoPrint sends the (large) state history at auth time
-        # unless the client has already said it doesn't want state.
-        self._ws.send(json.dumps({"auth": auth}))
+            # Authenticate after subscribing: OctoPrint sends the (large) state history at auth time
+            # unless the client has already said it doesn't want state.
+            self._ws.send(json.dumps({"auth": auth}))
+        except (websocket.WebSocketException, OSError) as exc:  # e.g. a handshake a busy OctoPrint answers too late
+            raise ConnectionError(str(exc)) from exc
 
     # -- message reading -----------------------------------------------------
 

@@ -193,10 +193,72 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(sleeps, [5, 15, 60, 300, 300])
         self.assertEqual(len(logs.records), 1)
 
+    def test_unexpected_error_is_logged_with_its_traceback_and_does_not_end_the_agent(self):
+        sleeps = []
+        agent, _ = self.agent(FakeClient(), [], sleeps)
+
+        def failing():
+            raise ValueError("a bug")
+
+        agent.push_factory = failing
+        with self.assertLogs("remote_slicing_agent", "WARNING") as logs:
+            agent.run_forever(max_rounds=3)
+        self.assertEqual(sleeps, [5, 15, 60])
+        self.assertEqual(len(logs.records), 1)
+        self.assertEqual(logs.records[0].levelname, "ERROR")
+        self.assertIs(logs.records[0].exc_info[0], ValueError)
+
+    def test_failing_right_after_connecting_keeps_backing_off(self):
+        sleeps = []
+        client = FakeClient()
+        client.heartbeat = mock.Mock(side_effect=main.client.ApiError(500, "plugin error"))
+        agent, _ = self.agent(client, [], sleeps)
+        with self.assertLogs("remote_slicing_agent", "WARNING") as logs:
+            agent.run_forever(max_rounds=4)
+        self.assertEqual(sleeps, [5, 15, 60, 300])
+        self.assertEqual(len(logs.records), 1)
+
+    def test_a_working_connection_resets_the_backoff_and_is_logged(self):
+        sleeps = []
+        client = FakeClient()
+        client.heartbeat = mock.Mock(side_effect=[main.client.ApiError(500, "x"), {"ok": True}])
+        agent, _ = self.agent(client, [], sleeps)  # the second round connects, then its script ends the socket
+        with self.assertLogs("remote_slicing_agent", "INFO") as logs:
+            agent.run_forever(max_rounds=2)
+        self.assertEqual(sleeps, [5, 5])
+        self.assertEqual([r.getMessage().split(":")[0] for r in logs.records],
+                         ["lost connection to OctoPrint", "connected to OctoPrint", "lost connection to OctoPrint"])
+
     def test_startup_shortcut_quotes(self):
         script = main.startup_shortcut_script(r"C:\O'Brien\a.lnk", "pythonw.exe", "-m x run", r"C:\w")
         self.assertIn("CreateShortcut('C:\\O''Brien\\a.lnk')", script)
         self.assertIn("$s.Arguments = '-m x run'", script)
+
+
+class RunCommandTests(unittest.TestCase):
+    def test_a_crash_outside_the_loop_reaches_the_log_file(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        log = main.logging.getLogger("remote_slicing_agent")
+        before = list(log.handlers)
+
+        def remove_handlers():
+            for handler in [h for h in log.handlers if h not in before]:
+                log.removeHandler(handler)
+                handler.close()
+        self.addCleanup(remove_handlers)
+        with mock.patch.dict(os.environ, {"REMOTE_SLICING_HOME": home}), \
+                mock.patch.object(main.winproc, "single_instance", return_value=True), \
+                mock.patch.object(main.winproc, "set_below_normal"), mock.patch.object(main.winproc, "set_eco_qos"), \
+                mock.patch.object(main.config, "load", return_value={"octoprint_url": "http://x", "api_key": "k",
+                                                                     "dropbox_root": home}), \
+                mock.patch.object(main, "Agent", side_effect=RuntimeError("cannot start")):
+            self.assertEqual(main.cmd_run(None), 1)
+            remove_handlers()
+            with open(main.config.log_path(), encoding="utf-8") as f:
+                text = f.read()
+        self.assertIn("agent stopped", text)
+        self.assertIn("RuntimeError: cannot start", text)
 
 
 class ImportTests(unittest.TestCase):

@@ -4,6 +4,7 @@ Uses only the standard library (``urllib.request``).  One short-lived
 connection per call -- no keep-alive pool.
 """
 
+import http.client
 import json
 import os
 import shutil
@@ -107,7 +108,7 @@ class Client:
             except Exception:
                 text = repr(raw)
             raise ApiError(status=exc.code, body=text)
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError) as exc:
             raise ApiError(status=0, body=str(exc))
 
     # -- JSON helpers --------------------------------------------------------

@@ -151,6 +151,25 @@ class TestUnreachable(unittest.TestCase):
             client.get_json("/api/test")
         self.assertEqual(ctx.exception.status, 0)
 
+    def test_garbled_reply_is_an_api_error_too(self):
+        """A reply that isn't HTTP raises http.client's own error, which is not an OSError."""
+        server = socket.socket()
+        self.addCleanup(server.close)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+
+        def answer():
+            conn, _ = server.accept()
+            conn.recv(4096)
+            conn.sendall(b"this is not http\r\n\r\n")
+            conn.close()
+
+        threading.Thread(target=answer, daemon=True).start()
+        client = Client("http://127.0.0.1:%d" % server.getsockname()[1], api_key="", timeout=5)
+        with self.assertRaises(ApiError) as ctx:
+            client.get_json("/api/test")
+        self.assertEqual(ctx.exception.status, 0)
+
 
 # ---------------------------------------------------------------------------
 # download

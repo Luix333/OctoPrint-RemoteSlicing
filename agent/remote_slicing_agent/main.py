@@ -52,10 +52,13 @@ class Agent:
             rounds += 1
             try:
                 self.run_once_connected()
-            except (ConnectionError, client.ApiError, OSError) as e:
+            except Exception as e:  # under pythonw an escaped error would end the agent with no trace at all
                 self._close()
                 if not self._warned:  # one line per outage, not one per retry
-                    self.log.warning("lost connection to OctoPrint: %s", e)
+                    if isinstance(e, (ConnectionError, client.ApiError, OSError)):
+                        self.log.warning("lost connection to OctoPrint: %s", e)
+                    else:
+                        self.log.exception("unexpected error, reconnecting")
                     self._warned = True
                 self.sleep(BACKOFF[min(self._failures, len(BACKOFF) - 1)])
                 self._failures += 1
@@ -71,13 +74,14 @@ class Agent:
     def run_once_connected(self):
         self.sock = self.push_factory()
         self.sock.connect()
+        self.heartbeat(force_snapshot=True)
+        self.try_claim()
+        # only now is the outage over: something failing right after connecting keeps backing off
         self._failures = 0
         if self._warned or not self._connected_once:
             self.log.info("connected to OctoPrint")
         self._warned = False
         self._connected_once = True
-        self.heartbeat(force_snapshot=True)
-        self.try_claim()
         interval = float(self.cfg.get("heartbeat_seconds") or 60)
         next_hb = self.clock() + interval
         while True:
@@ -210,7 +214,11 @@ def cmd_run(args):
         log.error("not set up: run python -m remote_slicing_agent setup")
         return 2
     log.info("agent %s starting (dropbox: %s)", __version__, cfg["dropbox_root"])
-    Agent(cfg).run_forever()
+    try:
+        Agent(cfg).run_forever()
+    except Exception:
+        log.exception("agent stopped")
+        return 1
     return 0
 
 
