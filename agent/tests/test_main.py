@@ -168,9 +168,12 @@ class AgentTests(unittest.TestCase):
         agent, _ = self.agent(client, [])
         agent.heartbeat(force_snapshot=True)
         agent.heartbeat()
+        with mock.patch.object(config, "profiles_stat", return_value=(5, 5)):
+            agent.heartbeat()
+        self.assertIsNotNone(client.heartbeats[-1]["snapshot"])  # Cura exported its profiles again
         with mock.patch.object(config, "snapshot_stat", return_value=(9, 9)):
             agent.heartbeat()
-        self.assertEqual([h["snapshot"] is not None for h in client.heartbeats], [True, False, True])
+        self.assertEqual([h["snapshot"] is not None for h in client.heartbeats], [True, False, True, True])
 
     def test_periodic_heartbeat_pings_and_claims(self):
         client = FakeClient()

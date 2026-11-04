@@ -1,12 +1,13 @@
 # Remote Slicing for OctoPrint
 
 Send models to your printer from OctoPrint, from any device, and have them sliced on your PC by
-CuraEngine with **the Cura settings you last used**: same printer, profile, materials and MMU extruders.
+CuraEngine with **the Cura settings you last used**, or any other profile of that printer: same printer,
+materials and MMU extruders.
 
 1. Upload an STL or a SolidWorks part in the **Remote Slicing** tab, or pick one from your PC's Dropbox
    folder.
 2. Drag and rotate the models on the top-down bed and choose an extruder (T0, T1, ...) for each one.
-3. Press **Slice & upload**, or **Slice, upload & print**.
+3. Pick a **Profile**, then press **Slice & upload**, or **Slice, upload & print**.
 
 The G-code lands in `RemoteSlicing/` in OctoPrint's file list, with the same header (print time,
 filament per extruder) that Cura writes.
@@ -18,7 +19,7 @@ Three parts, all in this repository:
 | Part | Runs on | Does |
 |---|---|---|
 | `octoprint_remoteslicing/` | the OctoPrint host (e.g. the printer's Raspberry Pi) | The tab, the model library and the job queue. |
-| `cura_plugin/RemoteSlicingSnapshot/` | Cura on your PC | Saves exactly what Cura would send to CuraEngine, to `%LOCALAPPDATA%\RemoteSlicing\snapshot.json`. It does this when Cura starts and two seconds after any settings change. |
+| `cura_plugin/RemoteSlicingSnapshot/` | Cura on your PC | Saves exactly what Cura would send to CuraEngine, to `%LOCALAPPDATA%\RemoteSlicing\snapshot.json`, when Cura starts and two seconds after any settings change. Every other profile of the printer goes to `profiles\` next to it. |
 | `agent/` | your PC (Windows) | A tiny background program. When a job is queued, it runs CuraEngine headlessly with that snapshot and uploads the G-code. |
 
 Slicing doesn't need Cura open; the snapshot is as fresh as the last time Cura ran. Because the
@@ -32,6 +33,17 @@ same per-layer chunks Cura uses, so Search and Replace and similar scripts chang
 Create Thumbnail gets a picture of the plate rendered on the PC: the same viewpoint and lighting as Cura's,
 but not pixel-identical. A script that needs more of Cura than that (the print-information panel, Qt, …)
 fails the job with its name, instead of being skipped silently.
+
+The **Profile** list next to the Slice buttons offers what Cura's own profile menu offers for the active printer,
+custom profiles included. **Active in Cura** is what Cura has selected right now, unsaved changes included. The other
+entries are the profiles as they are saved, so changes you haven't saved in Cura don't apply to them. The profile you
+last sliced with stays selected, on every device. A profile only decides settings: the materials, nozzles and
+post-processing scripts stay Cura's current ones, as they would if you picked it in Cura. Jobs from Explorer's
+right-click menu use Cura's active settings.
+
+The plugin works profiles out in the background without selecting them, so Cura's own view and any slice in progress
+aren't touched. That takes about 3 seconds per profile on a 12-extruder printer. It only happens when a profile,
+material, nozzle or printer setting changes, and new or renamed profiles reach the tab within about a minute.
 
 The agent costs almost nothing while idle. It keeps one connection to OctoPrint open, sends a
 heartbeat once a minute, and runs in Windows' efficiency mode. Slicing happens in a short-lived child process

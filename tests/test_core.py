@@ -176,6 +176,65 @@ class CoreTests(unittest.TestCase):
                                               "rotation": 0, "extruder": 1}], False)
         self.assertIn("extruder T1 does not exist", str(cm.exception))
 
+    def _plate(self):
+        m = self.core.add_model("cube", 10, "upload")
+        return [{"model_id": m["id"], "x": 0, "y": 0, "rotation": 0, "extruder": 0}]
+
+    def _list_profiles(self):
+        self.core.heartbeat({"version": "1.0", "snapshot": {
+            "created": self.host.t, "summary": {"extruders": [{"name": "T0"}]}, "bed": {"width": 220},
+            "profiles": [{"id": "custom/Fine", "name": "Fine", "group": "custom", "summary": {}}],
+        }})
+
+    def test_submit_slice_with_a_profile(self):
+        self._list_profiles()
+        task = self.core.submit_slice("plate", self._plate(), False, "custom/Fine")
+        self.assertEqual(task["payload"]["profile"], "custom/Fine")
+        self.assertEqual(task["payload"]["profile_name"], "Fine")
+
+    def test_submit_slice_unknown_profile(self):
+        self._list_profiles()
+        items = self._plate()
+        with self.assertRaises(ValueError) as cm:
+            self.core.submit_slice("plate", items, False, "custom/Gone")
+        self.assertIn("not available", str(cm.exception))
+        self.assertEqual(self.core.snapshot()["last_profile"], "")
+        self.assertEqual(self.core.tasks(), [])
+
+    def test_submit_slice_profile_must_be_a_string(self):
+        items = self._plate()
+        with self.assertRaises(ValueError):
+            self.core.submit_slice("plate", items, False, 7)
+
+    def test_submit_slice_remembers_the_profile(self):
+        self._list_profiles()
+        self.assertEqual(self.core.snapshot()["last_profile"], "")
+        self.core.submit_slice("plate", self._plate(), False, "custom/Fine")
+        self.assertEqual(self.core.snapshot()["last_profile"], "custom/Fine")
+
+    def test_choosing_active_settings_is_remembered_too(self):
+        self._list_profiles()
+        self.core.submit_slice("plate", self._plate(), False, "custom/Fine")
+        task = self.core.submit_slice("plate", self._plate(), False, "")
+        self.assertNotIn("profile", task["payload"])
+        self.assertEqual(self.core.snapshot()["last_profile"], "")
+
+    def test_a_job_with_no_choice_leaves_the_memory_alone(self):
+        self._list_profiles()
+        self.core.submit_slice("plate", self._plate(), False, "custom/Fine")
+        task = self.core.submit_slice("plate", self._plate(), False)  # Explorer's right-click menu
+        self.assertNotIn("profile", task["payload"])
+        self.assertEqual(self.core.snapshot()["last_profile"], "custom/Fine")
+
+    def test_last_profile_survives_a_restart(self):
+        self._list_profiles()
+        self.core.submit_slice("plate", self._plate(), False, "custom/Fine")
+        restarted = Core(FakeHost(), state=self.core.persistent_state())
+        self.assertEqual(restarted.snapshot()["last_profile"], "custom/Fine")
+
+    def test_state_from_before_profiles_existed(self):
+        self.assertEqual(Core(FakeHost(), state={"models": []}).snapshot()["last_profile"], "")
+
     def test_submit_slice_name_stripped(self):
         m = self.core.add_model("cube", 10, "upload")
         task = self.core.submit_slice("  ", [{"model_id": m["id"], "x": 0, "y": 0,

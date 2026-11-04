@@ -82,10 +82,24 @@ def _load_snapshot():
                          "Remote Slicing Snapshot plugin installed.")
 
 
+def _with_profile(snapshot, profile_id, profile_name):
+    """``snapshot`` as if that Cura profile were active. A profile only decides settings: the engine, the materials
+    and the post-processing scripts stay those of the snapshot."""
+    settings = config.load_profile(profile_id, snapshot["summary"].get("definition"))
+    if settings is None:
+        raise TaskFailed("The Cura profile %s is not available any more: pick another one in the Remote Slicing tab."
+                         % (profile_name or profile_id))
+    return dict(snapshot, resolved=settings["resolved"], summary=dict(snapshot["summary"], **settings["summary"]),
+                gcode_by_initial_extruder=settings["gcode_by_initial_extruder"],
+                initial_extruder_inputs=settings["initial_extruder_inputs"])
+
+
 def run_slice(task, cfg, client, reporter, folder):
     payload = task["payload"]
     items = payload["items"]
     snapshot = _load_snapshot()
+    if payload.get("profile"):
+        snapshot = _with_profile(snapshot, payload["profile"], payload.get("profile_name"))
     engine_path = snapshot.get("engine", {}).get("path", "")
     if not engine_path or not os.path.isfile(engine_path):
         raise TaskFailed("CuraEngine not found at %s" % engine_path)

@@ -71,11 +71,13 @@ class Core(object):
         self._agent_last_seen = None
         self._agent_version = None
         self._agent_snapshot = None
+        self._last_profile = ""  # the Cura profile the last plate was sliced with; "" = Cura's active settings
         self._listings = {}  # request_id -> {path, created}
 
         if state:
             self._models = list(state.get("models", []) or [])
             self._tasks = list(state.get("tasks", []) or [])
+            self._last_profile = state.get("last_profile", "") or ""
             agent = state.get("agent", {}) or {}
             self._agent_last_seen = agent.get("last_seen")
             self._agent_version = agent.get("version")
@@ -104,6 +106,7 @@ class Core(object):
                 "models": self.models(),
                 "tasks": self.tasks(),
                 "agent": self.agent_status(),
+                "last_profile": self._last_profile,
             }
 
     def persistent_state(self):
@@ -112,6 +115,7 @@ class Core(object):
             return {
                 "models": copy.deepcopy(self._models),
                 "tasks": copy.deepcopy(self._tasks),
+                "last_profile": self._last_profile,
                 "agent": {
                     "last_seen": self._agent_last_seen,
                     "version": self._agent_version,
@@ -214,7 +218,17 @@ class Core(object):
             "cancel_requested": False,
         }
 
-    def submit_slice(self, name, items, start_print):
+    def _profile_name(self, profile):
+        """The name of a profile the agent listed, for the Jobs list; ``ValueError`` if it didn't list it."""
+        if not isinstance(profile, str):
+            raise ValueError("profile must be a string")
+        listed = (self._agent_snapshot or {}).get("profiles") or []
+        for entry in listed:
+            if entry.get("id") == profile:
+                return entry.get("name", profile)
+        raise ValueError("the Cura profile {} is not available".format(profile))
+
+    def submit_slice(self, name, items, start_print, profile=None):
         """Submit a new slicing task.
 
         Parameters
@@ -226,6 +240,9 @@ class Core(object):
             ``tilt_x``/``tilt_y`` (multiples of 90 degrees, about X then Y, applied before ``rotation``).
         start_print : bool
             Whether to auto-start the print after slicing completes.
+        profile : str, optional
+            Id of a profile from the agent's list, or ``""`` for Cura's active settings. Remembered as the last used
+            one. ``None`` means nobody chose (Explorer's menu): Cura's active settings, and the memory stays.
 
         Returns
         -------
@@ -236,7 +253,7 @@ class Core(object):
         ------
         ValueError
             On validation failure (empty items, unknown model, bad coordinates,
-            or extruder out of range).
+            extruder out of range, or a profile the agent doesn't list).
         """
         with self._lock:
             # Validate items non-empty
@@ -312,11 +329,18 @@ class Core(object):
                     "extruder": extruder,
                 })
 
-            task = self._make_task("slice", {
+            payload = {
                 "name": name,
                 "items": cleaned_items,
                 "start_print": bool(start_print),
-            })
+            }
+            if profile:
+                payload["profile_name"] = self._profile_name(profile)
+                payload["profile"] = profile
+            if profile is not None:
+                self._last_profile = profile
+
+            task = self._make_task("slice", payload)
             self._tasks.append(task)
             self._host.changed()
             self._host.wake_agent({"type": "agent.wake"})

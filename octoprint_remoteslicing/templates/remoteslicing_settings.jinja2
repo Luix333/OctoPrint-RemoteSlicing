@@ -3,7 +3,8 @@
 <ol>
     <li><strong>The Cura plugin "Remote Slicing Snapshot".</strong> Drag <code>RemoteSlicingSnapshot-&lt;version&gt;.curapackage</code>
         onto Cura's window and restart Cura. It saves your active printer, profile and materials every time they
-        change, so jobs use the settings Cura was last closed with. Cura does not need to be open while slicing.</li>
+        change, so jobs use the settings Cura was last closed with, and every profile of that printer, so the
+        tab can slice with any of them. Cura does not need to be open while slicing.</li>
     <li><strong>The PC agent.</strong> From the <code>agent</code> folder, run
         <code>python -m remote_slicing_agent setup --url http://&lt;this OctoPrint&gt;</code> and approve the
         "Remote Slicing Agent" request that pops up here in OctoPrint. Then start it with

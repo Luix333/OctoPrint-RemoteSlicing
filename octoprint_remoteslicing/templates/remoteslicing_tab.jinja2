@@ -54,9 +54,13 @@
             </div>
 
             <div class="rs-slice-buttons">
+                <label class="rs-profile" title="Which Cura settings to slice with; the last one used is remembered">Profile
+                    <select id="remoteslicing_profile" data-bind="rsProfiles: {value: profileId, active: activeProfileLabel, profiles: profiles, label: profileLabel, choose: chooseProfile}"></select>
+                </label>
                 <button class="btn btn-primary" data-bind="enable: canSlice, click: function () { slice(false); }"><i class="fas fa-layer-group"></i> Slice &amp; upload</button>
                 <button class="btn btn-success" data-bind="enable: canSliceAndPrint, click: function () { slice(true); }"><i class="fas fa-print"></i> Slice, upload &amp; print</button>
                 <span class="muted" data-bind="text: sliceBlocker"></span>
+                <span class="rs-warn" data-bind="visible: profileGone, text: profileGoneText"></span>
             </div>
         </div>
 

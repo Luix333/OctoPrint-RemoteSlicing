@@ -175,12 +175,60 @@ class TestSnapshotHelpers(unittest.TestCase):
         with open(snap, "w") as f:
             json.dump(data, f)
         result = config.read_snapshot_summary()
-        self.assertEqual(len(result), 4)
+        self.assertEqual(len(result), 5)
+        self.assertEqual(result["profiles"], [])
         self.assertEqual(result["created"], "2024-01-01T12:00:00")
         self.assertEqual(result["cura_version"], "5.0.0")
         self.assertEqual(result["summary"], "Test print")
         self.assertEqual(result["bed"], "Bambu P1S")
         self.assertNotIn("resolved", result)
+
+    def _write_profiles(self, definition="voron", entries=None):
+        os.makedirs(config.profiles_dir(), exist_ok=True)
+        with open(os.path.join(config.profiles_dir(), "a1.json"), "w") as f:
+            json.dump({"resolved": {"global": {}}}, f)
+        entries = [{"id": "custom/Fine", "name": "Fine", "group": "custom", "file": "a1.json", "fingerprint": "x",
+                    "summary": {"layer_height": 0.1}}] if entries is None else entries
+        with open(os.path.join(config.profiles_dir(), "index.json"), "w") as f:
+            json.dump({"definition": definition, "profiles": entries}, f)
+
+    def test_read_profiles_lists_only_what_the_tab_needs(self):
+        self._write_profiles()
+        self.assertEqual(config.read_profiles(), [{"id": "custom/Fine", "name": "Fine", "group": "custom",
+                                                   "summary": {"layer_height": 0.1}}])
+
+    def test_read_profiles_without_an_index(self):
+        self.assertEqual(config.read_profiles(), [])
+        self.assertIsNone(config.profiles_stat())
+
+    def test_read_profiles_corrupt_index(self):
+        os.makedirs(config.profiles_dir())
+        with open(os.path.join(config.profiles_dir(), "index.json"), "w") as f:
+            f.write("{corrupt")
+        self.assertEqual(config.read_profiles(), [])
+
+    def test_profiles_stat_follows_the_index(self):
+        self._write_profiles()
+        before = config.profiles_stat()
+        self._write_profiles(entries=[])
+        self.assertNotEqual(config.profiles_stat(), before)
+
+    def test_load_profile(self):
+        self._write_profiles()
+        self.assertEqual(config.load_profile("custom/Fine", "voron"), {"resolved": {"global": {}}})
+
+    def test_load_profile_unknown(self):
+        self._write_profiles()
+        self.assertIsNone(config.load_profile("custom/Gone", "voron"))
+
+    def test_load_profile_of_another_printer(self):
+        self._write_profiles()
+        self.assertIsNone(config.load_profile("custom/Fine", "ender3"))
+
+    def test_load_profile_file_missing(self):
+        self._write_profiles()
+        os.remove(os.path.join(config.profiles_dir(), "a1.json"))
+        self.assertIsNone(config.load_profile("custom/Fine", "voron"))
 
     def test_read_snapshot_summary_missing(self):
         self.assertIsNone(config.read_snapshot_summary())

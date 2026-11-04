@@ -170,11 +170,56 @@ def snapshot_stat():
         return None
 
 
+def profiles_dir():
+    """Where the Cura plugin exports every profile: ``index.json`` plus one file per profile."""
+    return os.path.join(home(), "profiles")
+
+
+def _profile_index():
+    try:
+        with open(os.path.join(profiles_dir(), "index.json"), encoding="utf-8") as f:
+            index = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return index if isinstance(index, dict) else {}
+
+
+def profiles_stat():
+    """Return ``(st_mtime_ns, st_size)`` for the profile index, ``None`` if there is none."""
+    try:
+        st = os.stat(os.path.join(profiles_dir(), "index.json"))
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def read_profiles():
+    """The profiles Cura offers, for the OctoPrint tab: ``id``, ``name``, ``group`` and ``summary`` of each."""
+    return [{key: entry.get(key) for key in ("id", "name", "group", "summary")}
+            for entry in _profile_index().get("profiles", [])]
+
+
+def load_profile(profile_id, definition):
+    """The settings Cura exported for a profile of the printer ``definition``, or ``None`` if it has no such profile
+    (any more): the profile was deleted, or another printer is active in Cura."""
+    index = _profile_index()
+    if index.get("definition") != definition:
+        return None
+    for entry in index.get("profiles", []):
+        if entry.get("id") == profile_id:
+            try:
+                with open(os.path.join(profiles_dir(), entry["file"]), encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, ValueError, KeyError):
+                return None
+    return None
+
+
 def read_snapshot_summary():
     """Return a minimal summary of the current snapshot.
 
     Loads ``snapshot.json`` and returns only the keys
-    ``created``, ``cura_version``, ``summary``, and ``bed``.
+    ``created``, ``cura_version``, ``summary``, and ``bed``, plus the ``profiles`` from ``read_profiles()``.
     Returns ``None`` if the file is missing or corrupt.
     """
     try:
@@ -187,6 +232,7 @@ def read_snapshot_summary():
             "cura_version": data["cura_version"],
             "summary": data["summary"],
             "bed": data["bed"],
+            "profiles": read_profiles(),
         }
     except (OSError, json.JSONDecodeError, KeyError, ValueError):
         return None

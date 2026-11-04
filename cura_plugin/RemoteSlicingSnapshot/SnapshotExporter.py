@@ -10,12 +10,14 @@ StartSliceJob's own message builders, instead of being re-implemented outside Cu
 
 import configparser
 import datetime
+import hashlib
 import importlib
 import json
 import os
 import sys
 import tempfile
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import QTimer
@@ -30,9 +32,11 @@ from UM.Resources import Resources
 
 from cura.CuraApplication import CuraApplication
 
+from . import profile_view, profiles
 from .recorder import Recorder, toResolvedJson
 
 SNAPSHOT_FORMAT = 1
+PROFILES_FORMAT = 1
 DEBOUNCE_MS = 2000
 
 
@@ -47,6 +51,14 @@ def snapshotDir() -> str:
 
 def snapshotPath() -> str:
     return os.path.join(snapshotDir(), "snapshot.json")
+
+
+def profilesDir() -> str:
+    return os.path.join(snapshotDir(), "profiles")
+
+
+def profilesIndexPath() -> str:
+    return os.path.join(profilesDir(), "index.json")
 
 
 def _startSliceJobClass():
@@ -137,13 +149,9 @@ def buildPostProcessing(global_stack) -> Dict[str, Any]:
     }
 
 
-def buildSnapshot() -> Optional[Dict[str, Any]]:
-    """Runs on a JobQueue worker, like StartSliceJob itself does."""
-    app = CuraApplication.getInstance()
-    global_stack = app.getGlobalContainerStack()
-    if global_stack is None:
-        return None
-
+def buildSettings(app, global_stack) -> Dict[str, Any]:
+    """What a profile decides, from StartSliceJob's own builders: all of it is read through the stacks, so under
+    profile_view this gives the settings of the profile on show. Runs on a JobQueue worker, like StartSliceJob."""
     recorder = Recorder()
     job = _startSliceJobClass()(recorder)
     extruder_manager = app.getExtruderManager()
@@ -196,6 +204,27 @@ def buildSnapshot() -> Optional[Dict[str, Any]]:
         "flooring_extruder_nr", "top_bottom_extruder_nr", "infill_extruder_nr")}
     initial_inputs["default_extruder"] = int(app.getMachineManager().defaultExtruderPosition)
 
+    return {
+        "summary": {
+            "layer_height": float(_prop(global_stack, "layer_height")),
+            "infill": float(_prop(global_stack, "infill_sparse_density")),
+            "adhesion": _prop(global_stack, "adhesion_type"),
+            "support": bool(_prop(global_stack, "support_enable")),
+            "print_sequence": _prop(global_stack, "print_sequence"),
+        },
+        "resolved": resolved,
+        "gcode_by_initial_extruder": gcode_by_initial,
+        "initial_extruder_inputs": initial_inputs,
+    }
+
+
+def buildSnapshot() -> Optional[Dict[str, Any]]:
+    app = CuraApplication.getInstance()
+    global_stack = app.getGlobalContainerStack()
+    if global_stack is None:
+        return None
+
+    settings = buildSettings(app, global_stack)
     machine_manager = app.getMachineManager()
     extruders: List[Dict[str, Any]] = []
     for extruder_stack in global_stack.extruderList:
@@ -234,33 +263,25 @@ def buildSnapshot() -> Optional[Dict[str, Any]]:
             "nozzle_disallowed_areas": _prop(global_stack, "nozzle_disallowed_areas") or [],
             "edge_disallowed_size": edge,
         },
-        "summary": {
-            "machine": global_stack.getName(),
-            "definition": global_stack.definition.getId(),
-            "profile": machine_manager.activeQualityOrQualityChangesName,
-            "intent": machine_manager.activeIntentCategory,
-            "layer_height": float(_prop(global_stack, "layer_height")),
-            "infill": float(_prop(global_stack, "infill_sparse_density")),
-            "adhesion": _prop(global_stack, "adhesion_type"),
-            "support": bool(_prop(global_stack, "support_enable")),
-            "print_sequence": _prop(global_stack, "print_sequence"),
-            "extruders": extruders,
-        },
-        "resolved": resolved,
-        "gcode_by_initial_extruder": gcode_by_initial,
-        "initial_extruder_inputs": initial_inputs,
+        **settings,
+        "summary": dict(settings["summary"],
+                        machine=global_stack.getName(),
+                        definition=global_stack.definition.getId(),
+                        profile=machine_manager.activeQualityOrQualityChangesName,
+                        intent=machine_manager.activeIntentCategory,
+                        user_changes=machine_manager.numUserSettings,
+                        extruders=extruders),
         "post_processing": buildPostProcessing(global_stack),
     }
 
 
-def writeSnapshot(snapshot: Dict[str, Any]) -> str:
-    folder = snapshotDir()
+def _writeJson(target: str, data: Dict[str, Any]) -> None:
+    folder = os.path.dirname(target)
     os.makedirs(folder, exist_ok=True)
-    target = snapshotPath()
     fd, tmp = tempfile.mkstemp(prefix="snapshot.", suffix=".tmp", dir=folder)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f, separators=(",", ":"))
+            json.dump(data, f, separators=(",", ":"))
         os.replace(tmp, target)
     except Exception:
         try:
@@ -268,14 +289,63 @@ def writeSnapshot(snapshot: Dict[str, Any]) -> str:
         except OSError:
             pass
         raise
+
+
+def writeSnapshot(snapshot: Dict[str, Any]) -> str:
+    target = snapshotPath()
+    _writeJson(target, snapshot)
     return target
 
 
+def exportProfiles(app, global_stack, found: List[Dict[str, Any]]) -> None:
+    """Every profile the menu offers gets a file of its own and a line in profiles/index.json, which is what the
+    OctoPrint tab lists. Takes a while, so it only runs when a profile really came out different."""
+    fingerprint = profiles.fingerprint("%d/%s" % (PROFILES_FORMAT, app.getVersion()), global_stack, found)
+    try:
+        with open(profilesIndexPath(), encoding="utf-8") as f:
+            if json.load(f).get("fingerprint") == fingerprint:
+                return
+    except (OSError, ValueError):
+        pass
+
+    started = time.monotonic()
+    entries = []
+    with profile_view.evaluation():
+        for profile in found:
+            if app.getGlobalContainerStack() is not global_stack:
+                return  # another printer was activated, and the export that causes starts this again
+            profile_view.show(profile["containers"])
+            try:
+                settings = buildSettings(app, global_stack)
+            except Exception:
+                Logger.logException("w", "Remote Slicing couldn't export the profile %s", profile["name"])
+                continue
+            file_name = hashlib.sha1(profile["id"].encode("utf-8")).hexdigest()[:16] + ".json"
+            _writeJson(os.path.join(profilesDir(), file_name), settings)
+            entries.append({"id": profile["id"], "name": profile["name"], "group": profile["group"],
+                            "quality_type": profile["quality_type"], "intent": profile["intent"],
+                            "file": file_name, "summary": settings["summary"]})
+    _writeJson(profilesIndexPath(), {"format": PROFILES_FORMAT, "fingerprint": fingerprint,
+                                     "definition": global_stack.definition.getId(), "profiles": entries})
+    Logger.log("i", "Remote Slicing exported %d profiles in %.1f s", len(entries), time.monotonic() - started)
+
+    keep ={entry["file"] for entry in entries} | {os.path.basename(profilesIndexPath())}
+    for name in os.listdir(profilesDir()):
+        if name not in keep:
+            try:
+                os.unlink(os.path.join(profilesDir(), name))
+            except OSError:
+                pass
+
+
 class _ExportJob(Job):
-    def __init__(self, exporter: "SnapshotExporter", announce: bool) -> None:
+    def __init__(self, exporter: "SnapshotExporter", announce: bool, global_stack,
+                 found: Optional[List[Dict[str, Any]]]) -> None:
         super().__init__()
         self._exporter = exporter
         self._announce = announce
+        self._global_stack = global_stack
+        self._found = found
 
     def run(self) -> None:
         try:
@@ -286,6 +356,11 @@ class _ExportJob(Job):
             path = writeSnapshot(snapshot)
             Logger.log("i", "Remote Slicing snapshot written to %s (%d extruders)",
                        path, len(snapshot["summary"]["extruders"]))
+            if self._found is not None:
+                try:
+                    exportProfiles(CuraApplication.getInstance(), self._global_stack, self._found)
+                except Exception:  # the active settings are out by now, and they are what most jobs use
+                    Logger.logException("e", "Remote Slicing couldn't export the profiles")
             self._exporter._jobDone(snapshot, None, self._announce)
         except Exception as e:
             Logger.logException("e", "Remote Slicing snapshot failed")
@@ -317,7 +392,13 @@ class SnapshotExporter(Extension):
     # Change tracking ------------------------------------------------------------------------
 
     def _onEngineCreated(self) -> None:
-        self._app.getMachineManager().globalContainerChanged.connect(self._onGlobalChanged)
+        machine_manager = self._app.getMachineManager()
+        machine_manager.globalContainerChanged.connect(self._onGlobalChanged)
+        machine_manager.activeQualityChanged.connect(self._onSomethingChanged)  # all a renamed profile announces
+        registry = self._app.getContainerRegistry()
+        registry.containerAdded.connect(self._onContainerChanged)
+        registry.containerRemoved.connect(self._onContainerChanged)
+        registry.containerMetaDataChanged.connect(self._onContainerChanged)
         self._onGlobalChanged()
 
     def _onGlobalChanged(self) -> None:
@@ -342,6 +423,11 @@ class SnapshotExporter(Extension):
     def _onSomethingChanged(self, *args) -> None:
         self._schedule()
 
+    def _onContainerChanged(self, container) -> None:
+        # Profiles that aren't active, and materials being edited, are not in any stack.
+        if container.getMetaDataEntry("type") in ("quality_changes", "material"):
+            self._schedule()
+
     def _schedule(self) -> None:
         # Signals can arrive from worker threads; QTimer.start must run on the GUI thread.
         if threading.current_thread() is threading.main_thread():
@@ -358,7 +444,14 @@ class SnapshotExporter(Extension):
                 return
             self._running = True
             announce, self._announce_next = self._announce_next, False
-        JobQueue.getInstance().add(_ExportJob(self, announce))
+        global_stack = self._app.getGlobalContainerStack()
+        found = None
+        if global_stack is not None:
+            try:
+                found = profiles.listProfiles(global_stack)
+            except Exception:
+                Logger.logException("e", "Remote Slicing couldn't list the profiles")
+        JobQueue.getInstance().add(_ExportJob(self, announce, global_stack, found))
 
     def _jobDone(self, snapshot: Optional[Dict[str, Any]], error: Optional[str], announce: bool) -> None:
         with self._lock:

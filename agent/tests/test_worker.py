@@ -112,6 +112,69 @@ class WorkerTests(unittest.TestCase):
     def run_task(self, task, client, cfg=None):
         return worker.run_task(task, cfg or {"dropbox_root": self.home}, client)
 
+    def write_profile(self, definition="voron"):
+        """Cura's export of one profile that isn't the active one."""
+        self.snapshot["summary"]["definition"] = "voron"
+        self.snapshot["summary"]["layer_height"] = 0.2
+        self.write_snapshot()
+        os.makedirs(config.profiles_dir())
+        with open(os.path.join(config.profiles_dir(), "a1.json"), "w") as f:
+            json.dump({"summary": {"layer_height": 0.1},
+                       "resolved": {"global": {"machine_start_gcode": "OLD", "layer_height": "0.1"},
+                                    "extruder.0": {}, "extruder.1": {}},
+                       "gcode_by_initial_extruder": {"0": {"machine_start_gcode": "FINE0", "machine_end_gcode": "END0"}},
+                       "initial_extruder_inputs": self.snapshot["initial_extruder_inputs"]}, f)
+        with open(os.path.join(config.profiles_dir(), "index.json"), "w") as f:
+            json.dump({"definition": definition, "profiles": [{"id": "custom/Fine", "file": "a1.json"}]}, f)
+
+    def test_slice_with_a_profile_uses_its_settings(self):
+        self.write_profile()
+        task = self.slice_task()
+        task["payload"].update(profile="custom/Fine", profile_name="Fine")
+        client = FakeClient()
+        with mock.patch.object(engine, "run", self.fake_run):
+            self.assertEqual(self.run_task(task, client), 0)
+        self.assertEqual(len(client.named("done")), 1)
+        self.assertEqual(self.resolved[0]["global"]["layer_height"], "0.1")
+        self.assertEqual(self.resolved[0]["global"]["machine_start_gcode"], "FINE0")
+
+    def test_slice_without_a_profile_ignores_the_exported_ones(self):
+        self.write_profile()
+        client = FakeClient()
+        with mock.patch.object(engine, "run", self.fake_run):
+            self.assertEqual(self.run_task(self.slice_task(), client), 0)
+        self.assertEqual(self.resolved[0]["global"]["machine_start_gcode"], "START0")
+
+    def test_with_profile_keeps_what_a_profile_does_not_decide(self):
+        self.write_profile()
+        self.snapshot["post_processing"] = {"scripts": ["kept"]}
+        result = worker._with_profile(self.snapshot, "custom/Fine", "Fine")
+        self.assertEqual(result["post_processing"], {"scripts": ["kept"]})
+        self.assertEqual(result["engine"], self.snapshot["engine"])
+        self.assertEqual(result["summary"]["extruders"], self.snapshot["summary"]["extruders"])
+        self.assertEqual(result["summary"]["layer_height"], 0.1)
+        self.assertEqual(self.snapshot["summary"]["layer_height"], 0.2)  # the loaded snapshot isn't changed
+
+    def test_slice_with_a_deleted_profile_fails_instead_of_using_other_settings(self):
+        self.write_profile()
+        task = self.slice_task()
+        task["payload"].update(profile="custom/Gone", profile_name="Gone")
+        client = FakeClient()
+        with mock.patch.object(engine, "run", self.fake_run):
+            self.assertEqual(self.run_task(task, client), 0)
+        self.assertEqual(self.cmds, [])
+        self.assertIn("The Cura profile Gone is not available", client.named("failed")[0][2])
+
+    def test_slice_with_a_profile_of_another_printer_fails(self):
+        self.write_profile(definition="ender3")
+        task = self.slice_task()
+        task["payload"].update(profile="custom/Fine", profile_name="Fine")
+        client = FakeClient()
+        with mock.patch.object(engine, "run", self.fake_run):
+            self.run_task(task, client)
+        self.assertEqual(self.cmds, [])
+        self.assertTrue(client.named("failed"))
+
     def test_slice_uploads_and_reports_done(self):
         client = FakeClient()
         with mock.patch.object(engine, "run", self.fake_run):

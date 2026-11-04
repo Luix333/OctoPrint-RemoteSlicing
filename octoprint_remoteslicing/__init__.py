@@ -365,6 +365,7 @@ class RemoteSlicingPlugin(
                 data.get("name", ""),
                 data.get("items", []),
                 start_print,
+                data.get("profile"),
             )
         except ValueError as exc:
             return flask.jsonify({"error": str(exc)}), 409

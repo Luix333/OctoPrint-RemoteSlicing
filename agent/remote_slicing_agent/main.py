@@ -103,7 +103,7 @@ class Agent:
     # ------------------------------------------------------------------- server
 
     def heartbeat(self, force_snapshot=False):
-        stat = config.snapshot_stat()
+        stat = (config.snapshot_stat(), config.profiles_stat())
         changed = force_snapshot or stat != self._last_stat
         summary = config.read_snapshot_summary() if changed else None
         self.client.heartbeat({"version": __version__, "snapshot": summary})

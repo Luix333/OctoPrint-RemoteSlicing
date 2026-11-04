@@ -26,6 +26,31 @@ $(function () {
     }
     var BED = window.RemoteSlicingBed;
 
+    // The profile <select>: Cura's active settings first, then Cura's two groups of profiles. Optgroups are why this
+    // isn't the options binding; rebuilt only when its content changes, as a state push must not close an open list.
+    ko.bindingHandlers.rsProfiles = {
+        init: function (element, valueAccessor) {
+            $(element).on("change", function () { valueAccessor().choose($(element).val()); });
+        },
+        update: function (element, valueAccessor) {
+            var o = valueAccessor(), select = $(element);
+            var active = o.active(), profiles = o.profiles(), key = JSON.stringify([active, profiles]);
+            if (select.data("rsKey") !== key) {
+                select.data("rsKey", key).empty();
+                $("<option>").val("").text(active).appendTo(select);
+                _.each([["quality", "Profiles"], ["custom", "Custom profiles"]], function (g) {
+                    var rows = _.where(profiles, {group: g[0]});
+                    if (g[0] === "quality") { rows = _.sortBy(rows, function (p) { return p.summary.layer_height; }); }
+                    if (!rows.length) { return; }
+                    var group = $("<optgroup>").attr("label", g[1]).appendTo(select);
+                    _.each(rows, function (p) { $("<option>").val(p.id).text(o.label(p)).appendTo(group); });
+                });
+            }
+            var wanted = o.value();
+            select.val(_.findWhere(profiles, {id: wanted}) ? wanted : "");
+        }
+    };
+
     function TaskRow(d) {
         var self = this;
         self.id = d.id;
@@ -48,7 +73,8 @@ $(function () {
             self.stage(t.cancel_requested ? "cancelling…" : (t.stage || ""));
             self.error(t.state === "failed" ? (t.error || "failed") : "");
             if (t.kind === "slice") {
-                self.title(p.name + " · " + (p.items || []).length + " model(s)" + (p.start_print ? " · print" : ""));
+                self.title(p.name + " · " + (p.items || []).length + " model(s)" + (p.profile_name ? " · " + p.profile_name : "") +
+                           (p.start_print ? " · print" : ""));
             } else if (t.kind === "fetch") {
                 self.title("Fetch " + String(p.path || "").split("/").pop());
             } else {
@@ -122,10 +148,29 @@ $(function () {
         self.settingsText = ko.pureComputed(function () {
             var snap = self.snapshot();
             if (!snap) { return "No Cura settings yet: open Cura on the PC once with the Remote Slicing Snapshot plugin."; }
-            var s = snap.summary || {};
+            var s = snap.summary || {}, profile = self.chosenProfile(), shown = profile ? profile.summary : s;
             var created = Date.parse(snap.created) / 1000;
-            return [s.machine, s.profile, s.layer_height + " mm", Math.round(s.infill) + "% infill",
+            return [s.machine, profile ? profile.name : s.profile, shown.layer_height + " mm", Math.round(shown.infill) + "% infill",
                 "settings from " + self.ago(created)].join(" · ");
+        });
+
+        // "" is whatever is active in Cura. The server remembers the last one used, for every browser, and a browser
+        // follows it until someone picks another one here.
+        self.profileId = ko.observable("");
+        var profilePicked = false;
+        self.chooseProfile = function (id) { profilePicked = true; self.profileId(id); };
+        self.profiles = ko.pureComputed(function () { var snap = self.snapshot(); return (snap && snap.profiles) || []; });
+        self.chosenProfile = ko.pureComputed(function () { return _.findWhere(self.profiles(), {id: self.profileId()}) || null; });
+        self.profileGone = ko.pureComputed(function () { return !!self.profileId() && !self.chosenProfile(); });
+        self.profileGoneText = ko.pureComputed(function () {
+            return "The last used profile, " + self.profileId().replace(/^[^/]*\//, "") + ", is not in Cura any more.";
+        });
+        self.profileLabel = function (p) { return p.name + " · " + p.summary.layer_height + " mm"; };
+        self.activeProfileLabel = ko.pureComputed(function () {
+            var snap = self.snapshot(), s = (snap && snap.summary) || {};
+            if (!snap) { return "Active in Cura"; }
+            var changes = s.user_changes ? " + " + s.user_changes + " unsaved" : "";
+            return "Active in Cura: " + s.profile + " · " + s.layer_height + " mm" + changes;
         });
         self.bedSize = ko.pureComputed(function () {
             var snap = self.snapshot();
@@ -155,6 +200,7 @@ $(function () {
             if (s.server_time) { self.serverOffset = s.server_time - Date.now() / 1000; }
             self.models(s.models || []);
             self.agent(s.agent || {online: false});
+            if (!profilePicked && s.last_profile !== undefined) { self.profileId(s.last_profile); }
             var jobs = _.filter(s.tasks || [], function (t) { return t.kind !== "preview"; });
             reconcile(self.tasks, jobs, function (d) { return new TaskRow(d); });
             self.followPreviewTask(s.tasks || []);
@@ -375,15 +421,21 @@ $(function () {
                         rotation: Number(it.rotation()), extruder: Number(it.extruder()),
                         tilt_x: Number(it.tiltX()), tilt_y: Number(it.tiltY())};
             });
+            var profile = self.chosenProfile();
             var send = function () {
-                OctoPrint.postJson(base + "slice", {name: self.plateName(), items: items, start_print: startPrint})
-                    .done(function () { self.notify(startPrint ? "Queued: slice, upload & print" : "Slicing job queued"); })
+                OctoPrint.postJson(base + "slice", {name: self.plateName(), items: items, start_print: startPrint,
+                                                    profile: profile ? profile.id : ""})
+                    .done(function () {
+                        profilePicked = false;
+                        self.notify(startPrint ? "Queued: slice, upload & print" : "Slicing job queued");
+                    })
                     .fail(self.failure("Could not queue the job"));
             };
             if (!startPrint) { send(); return; }
             showConfirmationDialog({
                 title: "Slice and print",
-                message: "Slice " + items.length + " model(s) and start printing as soon as the file is uploaded? " +
+                message: "Slice " + items.length + " model(s)" + (profile ? " with " + profile.name : "") +
+                    " and start printing as soon as the file is uploaded? " +
                     "The printer must be idle and the bed clear.",
                 proceed: "Slice & print",
                 onproceed: send
