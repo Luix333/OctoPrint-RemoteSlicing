@@ -166,6 +166,15 @@ class PushSocket:
         except (websocket.WebSocketException, OSError) as exc:
             raise ConnectionError(str(exc))
 
+    def abort(self):
+        """Drop the connection at once, from another thread too: a blocked next_message() then raises."""
+        ws = self._ws
+        if ws is not None:
+            try:
+                ws.shutdown()
+            except Exception:
+                pass
+
     def close(self):
         """Close the websocket quietly."""
         try:

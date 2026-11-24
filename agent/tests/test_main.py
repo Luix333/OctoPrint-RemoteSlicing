@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -111,6 +113,65 @@ class AgentTests(unittest.TestCase):
     def run_script(self, agent):
         with self.assertRaises(ConnectionError):
             agent.run_once_connected()
+
+    def test_status_follows_connection_and_jobs(self):
+        client = FakeClient([{"id": "t1", "kind": "slice"}])
+        self.procs = [FakeProc([0])]
+        seen = []
+        agent, _ = self.agent(client, [None])
+        agent.on_status = lambda state, detail: seen.append((state, detail))
+        agent.run_forever(max_rounds=1)
+        self.assertEqual(seen, [("busy", "slice"), ("online", ""), ("offline", "end of script")])
+        self.assertEqual(agent.status, ("offline", "end of script"))
+
+    def test_a_failing_status_display_does_not_stop_the_agent(self):
+        agent, _ = self.agent(FakeClient(), [None])
+        agent.on_status = mock.Mock(side_effect=RuntimeError("tray gone"))
+        agent.run_forever(max_rounds=1)
+        self.assertEqual(agent.status[0], "offline")
+
+    def _blocking_agent(self, push_factory):
+        return main.Agent({"octoprint_url": "http://x", "api_key": "k", "dropbox_root": self.home},
+                          client_obj=FakeClient(), push_factory=push_factory, spawn=lambda *a: None)
+
+    def test_stop_from_another_thread_ends_a_blocked_socket_wait(self):
+        released = threading.Event()
+
+        class BlockingSock(FakeSock):
+            def next_message(self, timeout):
+                released.wait(30)
+                raise ConnectionError("aborted")
+
+            def abort(self):
+                released.set()
+
+        agent = self._blocking_agent(lambda: BlockingSock([], self.clock))
+        seen = []
+        agent.on_status = lambda state, detail: seen.append(state)
+        runner = threading.Thread(target=agent.run_forever)
+        runner.start()
+        time.sleep(0.2)
+        started = time.monotonic()
+        agent.stop()
+        runner.join(5)
+        self.assertFalse(runner.is_alive())
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(seen, ["online"])  # stopping is not an outage
+
+    def test_stop_cuts_a_reconnect_wait_short(self):
+        class Refused(FakeSock):
+            def connect(self):
+                raise ConnectionError("refused")
+
+        agent = self._blocking_agent(lambda: Refused([], self.clock))
+        runner = threading.Thread(target=agent.run_forever)
+        runner.start()
+        time.sleep(0.2)  # now in the 5 s backoff
+        started = time.monotonic()
+        agent.stop()
+        runner.join(5)
+        self.assertFalse(runner.is_alive())
+        self.assertLess(time.monotonic() - started, 2)
 
     def test_connect_sends_forced_snapshot_and_claims(self):
         client = FakeClient()
@@ -232,10 +293,11 @@ class AgentTests(unittest.TestCase):
         self.assertEqual([r.getMessage().split(":")[0] for r in logs.records],
                          ["lost connection to OctoPrint", "connected to OctoPrint", "lost connection to OctoPrint"])
 
-    def test_startup_shortcut_quotes(self):
-        script = main.startup_shortcut_script(r"C:\O'Brien\a.lnk", "pythonw.exe", "-m x run", r"C:\w")
+    def test_shortcut_quotes(self):
+        script = main.shortcut_script(r"C:\O'Brien\a.lnk", "pythonw.exe", '"x.pyw"', r"C:\w", r"C:\i.ico")
         self.assertIn("CreateShortcut('C:\\O''Brien\\a.lnk')", script)
-        self.assertIn("$s.Arguments = '-m x run'", script)
+        self.assertIn("$s.Arguments = '\"x.pyw\"'", script)
+        self.assertIn("$s.IconLocation = 'C:\\i.ico,0'", script)
 
 
 class RunCommandTests(unittest.TestCase):

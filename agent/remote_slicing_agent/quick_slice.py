@@ -128,7 +128,7 @@ def start_agent():
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     exe = pythonw if os.path.exists(pythonw) else sys.executable
     flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: outlives this window
-    subprocess.Popen([exe, "-m", "remote_slicing_agent", "run"], cwd=AGENT_DIR, creationflags=flags,
+    subprocess.Popen([exe, "-m", "remote_slicing_agent", "run", "--quiet"], cwd=AGENT_DIR, creationflags=flags,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      close_fds=True)
 

@@ -78,9 +78,13 @@ python -m remote_slicing_agent setup --url http://<your-octoprint-address>
 ```
 
 OctoPrint shows a dialog asking to allow **Remote Slicing Agent**. Approve it and the agent stores its
-key. Start the agent with `pythonw -m remote_slicing_agent run`, or let it start with Windows:
-`python -m remote_slicing_agent install-startup`. `python -m remote_slicing_agent status` shows what it
-is doing.
+key. Start the agent by double-clicking `agent\agent.pyw`, or add it to the Start menu with
+`python -m remote_slicing_agent install-shortcut`. It shows an icon in the notification area (under **^** at first
+on Windows 11): blue when connected, amber while slicing, grey when OctoPrint can't be reached. Its menu opens the
+Remote Slicing tab or the agent's log, switches **Start with Windows** on and off, and exits the agent. The same
+switch is `python -m remote_slicing_agent startup on|off`; Task Manager's Startup apps list shows it too. Starting
+the agent again while it runs just makes the running one say so. `python -m remote_slicing_agent status` shows
+what it is doing.
 
 SolidWorks parts are converted by SolidWorks itself, through the
 [Cura SolidWorks plugin](https://github.com/Luix333/LegacyCuraSolidWorksPlugin) (v1.0.0+) installed in Cura.

@@ -3,7 +3,7 @@
 Idle cost is the design constraint. The process blocks in one websocket ``recv`` on OctoPrint's push socket,
 subscribed only to this plugin's messages, and sends an HTTP heartbeat once a minute. Each task runs in a
 short-lived child (``python -m remote_slicing_agent.worker``), so numpy, CuraEngine and SolidWorks never
-load in here; a unit test makes sure nothing imports them.
+load in here; a unit test makes sure nothing imports them. The tray icon (``tray.py``) sleeps on a thread of its own.
 """
 
 import argparse
@@ -14,6 +14,7 @@ import logging.handlers
 import os
 import subprocess
 import sys
+import threading
 import time
 
 from . import __version__, client, config, dropbox_browse, push, winproc
@@ -21,22 +22,25 @@ from . import __version__, client, config, dropbox_browse, push, winproc
 BACKOFF = (5, 15, 60, 300)  # reconnect delays, then 300 s forever
 JOB_POLL = 2.0  # socket wait while a job runs, to notice it finishing
 AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STARTUP_LNK = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs",
-                           "Startup", "Remote Slicing Agent.lnk")
+START_MENU_LNK = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs",
+                              "Remote Slicing Agent.lnk")
 
 _JOB = None  # KillOnCloseJob: workers (and their CuraEngine) die with the agent
 
 
 class Agent:
     def __init__(self, cfg, client_obj=None, push_factory=None, spawn=None, clock=time.monotonic,
-                 sleep=time.sleep, log=None):
+                 sleep=None, log=None, on_status=None):
         self.cfg = cfg
         self.client = client_obj or client.Client(cfg["octoprint_url"], cfg["api_key"])
         self.push_factory = push_factory or (lambda: push.PushSocket(self.client))
         self.spawn = spawn or self._spawn_worker
         self.clock = clock
-        self.sleep = sleep
+        self._stopping = threading.Event()
+        self.sleep = sleep or self._stopping.wait  # stop() cuts a reconnect wait short
         self.log = log or logging.getLogger("remote_slicing_agent")
+        self.on_status = on_status
+        self.status = ("connecting", "")  # (connecting | online | busy | offline, detail), for the tray
         self.sock = None
         self.job = None
         self._failures = 0
@@ -44,16 +48,39 @@ class Agent:
         self._connected_once = False
         self._last_stat = object()  # never equal to a real stat: the first heartbeat carries the summary
 
+    def _set_status(self, state, detail=""):
+        if (state, detail) == self.status:
+            return
+        self.status = (state, detail)
+        if self.on_status:
+            try:
+                self.on_status(state, detail)
+            except Exception:
+                self.log.exception("status display")
+
+    def stop(self):
+        """End run_forever from another thread (the tray's Exit): wakes a socket wait or a reconnect wait."""
+        self._stopping.set()
+        sock = self.sock
+        if sock is not None:
+            try:
+                getattr(sock, "abort", sock.close)()
+            except Exception:
+                pass
+
     # ---------------------------------------------------------------- connection
 
     def run_forever(self, max_rounds=None):
         rounds = 0
-        while max_rounds is None or rounds < max_rounds:
+        while (max_rounds is None or rounds < max_rounds) and not self._stopping.is_set():
             rounds += 1
             try:
                 self.run_once_connected()
             except Exception as e:  # under pythonw an escaped error would end the agent with no trace at all
                 self._close()
+                if self._stopping.is_set():
+                    break
+                self._set_status("offline", str(e)[:60])
                 if not self._warned:  # one line per outage, not one per retry
                     if isinstance(e, (ConnectionError, client.ApiError, OSError)):
                         self.log.warning("lost connection to OctoPrint: %s", e)
@@ -62,6 +89,7 @@ class Agent:
                     self._warned = True
                 self.sleep(BACKOFF[min(self._failures, len(BACKOFF) - 1)])
                 self._failures += 1
+        self._close()
 
     def _close(self):
         if self.sock is not None:
@@ -80,11 +108,15 @@ class Agent:
         self._failures = 0
         if self._warned or not self._connected_once:
             self.log.info("connected to OctoPrint")
+            if not self._connected_once:
+                winproc.empty_working_set()  # start-up imports and the tray's shell DLLs are paged in only once
         self._warned = False
         self._connected_once = True
+        if not self.job:
+            self._set_status("online")
         interval = float(self.cfg.get("heartbeat_seconds") or 60)
         next_hb = self.clock() + interval
-        while True:
+        while not self._stopping.is_set():
             timeout = JOB_POLL if self.job else max(0.5, next_hb - self.clock())
             msg = self.sock.next_message(timeout)
             if msg:
@@ -121,6 +153,7 @@ class Agent:
             json.dump(task, f)
         self.job = {"task": task, "path": path, "proc": self.spawn(task, path)}
         self.log.info("task %s (%s) started", task["id"], task.get("kind"))
+        self._set_status("busy", task.get("kind") or "")
 
     def check_job(self):
         if not self.job or self.job["proc"].poll() is None:
@@ -140,6 +173,7 @@ class Agent:
         except OSError:
             pass
         self.job = None
+        self._set_status("online")
         winproc.empty_working_set()
         gc.collect()
         self.try_claim()  # drain the queue
@@ -187,17 +221,28 @@ def _ps_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def startup_shortcut_script(lnk, target, args, workdir):
-    """PowerShell that writes a Startup-folder shortcut (WindowStyle 7 = minimised; pythonw has no window)."""
+def shortcut_script(lnk, target, args, workdir, icon):
+    """PowerShell that writes a shortcut (WindowStyle 7 = minimised; pythonw has no window anyway)."""
     return ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut({}); $s.TargetPath = {}; "
-            "$s.Arguments = {}; $s.WorkingDirectory = {}; $s.WindowStyle = 7; $s.Save()").format(
-        _ps_quote(lnk), _ps_quote(target), _ps_quote(args), _ps_quote(workdir))
+            "$s.Arguments = {}; $s.WorkingDirectory = {}; $s.IconLocation = {}; $s.WindowStyle = 7; "
+            "$s.Description = 'Slices OctoPrint jobs on this PC with Cura''s settings'; $s.Save()").format(
+        _ps_quote(lnk), _ps_quote(target), _ps_quote(args), _ps_quote(workdir), _ps_quote(icon + ",0"))
+
+
+def _startup():
+    from . import autostart
+    return autostart.Startup()
 
 
 # ----------------------------------------------------------------------- commands
 
 def cmd_run(args):
+    quiet = getattr(args, "quiet", False)
     if winproc.single_instance() is None:
+        if winproc.IS_WINDOWS:
+            from . import tray
+            if tray.announce_running():  # the running copy says so from its icon
+                return 0
         print("Remote Slicing agent is already running")
         return 1
     os.makedirs(config.home(), exist_ok=True)
@@ -214,11 +259,29 @@ def cmd_run(args):
         log.error("not set up: run python -m remote_slicing_agent setup")
         return 2
     log.info("agent %s starting (dropbox: %s)", __version__, cfg["dropbox_root"])
+    ui = None
     try:
-        Agent(cfg).run_forever()
+        agent = Agent(cfg)
+        if winproc.IS_WINDOWS:
+            startup = _startup()
+            try:
+                moved = startup.migrate_shortcut()
+                if moved:
+                    log.info("the Startup-folder shortcut became the Start with Windows setting (%s)", moved)
+            except OSError:
+                log.exception("couldn't move the old Startup-folder shortcut")
+            if not getattr(args, "no_tray", False):
+                from . import tray
+                ui = tray.AgentTray(agent, cfg["octoprint_url"], startup, log)
+                ui.start(quiet=quiet)
+        agent.run_forever()
     except Exception:
         log.exception("agent stopped")
         return 1
+    finally:
+        if ui is not None:
+            ui.stop()
+    log.info("agent exited")
     return 0
 
 
@@ -260,21 +323,37 @@ def cmd_status(args):
     return 0
 
 
-def cmd_install_startup(args):
-    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    target = pythonw if os.path.exists(pythonw) else sys.executable
-    script = startup_shortcut_script(STARTUP_LNK, target, "-m remote_slicing_agent run", AGENT_DIR)
-    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], check=True)
-    print("created", STARTUP_LNK)
+def cmd_startup(args):
+    """The same switch as the tray's Start with Windows."""
+    startup = _startup()
+    startup.migrate_shortcut()
+    if args.state in ("on", "off"):
+        startup.set(args.state == "on")
+    if startup.enabled():
+        print("Start with Windows: on (%s)" % startup.command())
+    elif startup.disabled_by_user():
+        print("Start with Windows: off (switched off in Task Manager or Settings)")
+    else:
+        print("Start with Windows: off")
     return 0
 
 
-def cmd_remove_startup(args):
-    if os.path.exists(STARTUP_LNK):
-        os.remove(STARTUP_LNK)
-        print("removed", STARTUP_LNK)
+def cmd_install_shortcut(args):
+    from . import autostart
+    script = shortcut_script(START_MENU_LNK, autostart.pythonw(), '"%s"' % autostart.LAUNCHER, AGENT_DIR,
+                             os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "online.ico"))
+    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], check=True,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    print("created", START_MENU_LNK)
+    return 0
+
+
+def cmd_remove_shortcut(args):
+    if os.path.exists(START_MENU_LNK):
+        os.remove(START_MENU_LNK)
+        print("removed", START_MENU_LNK)
     else:
-        print("no startup shortcut")
+        print("no Start menu entry")
     return 0
 
 
@@ -302,12 +381,18 @@ def cmd_quick_slice(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m remote_slicing_agent")
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("run", help="run the agent (default)")
+    run = sub.add_parser("run", help="run the agent (default), with its icon in the notification area")
+    run.add_argument("--quiet", action="store_true", help="no 'is running' notification (logon, Explorer's menu)")
+    run.add_argument("--no-tray", action="store_true", help="no notification-area icon")
     setup = sub.add_parser("setup", help="connect to OctoPrint (asks you to approve the agent there)")
     setup.add_argument("--url")
     sub.add_parser("status", help="show the configuration and the last log lines")
-    sub.add_parser("install-startup", help="start the agent when you log in to Windows")
-    sub.add_parser("remove-startup", help="stop starting the agent at login")
+    startup = sub.add_parser("startup", help="Start with Windows: on, off, or show it (as in the tray's menu)")
+    startup.add_argument("state", nargs="?", choices=("on", "off"))
+    sub.add_parser("install-startup", help="same as: startup on")
+    sub.add_parser("remove-startup", help="same as: startup off")
+    sub.add_parser("install-shortcut", help="add Remote Slicing Agent to the Start menu (starts the agent)")
+    sub.add_parser("remove-shortcut", help="remove that Start menu entry")
     sub.add_parser("install-menu", help='add "Slice..." to the right-click menu of .stl and .sldprt files in '
                                         'Explorer')
     sub.add_parser("remove-menu", help="remove those right-click entries")
@@ -315,7 +400,10 @@ def main(argv=None):
                                                "[--print] [--place POSITION | --options] FILE...")
     quick.add_argument("quick_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
-    commands = {"setup": cmd_setup, "status": cmd_status, "install-startup": cmd_install_startup,
-                "remove-startup": cmd_remove_startup, "install-menu": cmd_install_menu,
+    if args.command in ("install-startup", "remove-startup"):
+        args.state = "on" if args.command == "install-startup" else "off"
+    commands = {"setup": cmd_setup, "status": cmd_status, "startup": cmd_startup, "install-startup": cmd_startup,
+                "remove-startup": cmd_startup, "install-shortcut": cmd_install_shortcut,
+                "remove-shortcut": cmd_remove_shortcut, "install-menu": cmd_install_menu,
                 "remove-menu": cmd_remove_menu, "quick-slice": cmd_quick_slice}
     return commands.get(args.command, cmd_run)(args)
